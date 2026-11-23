@@ -46,6 +46,9 @@ type dataTable struct {
 	// filter is an extra predicate on an export, for a table that holds more than one
 	// kind of row.
 	filter string
+	// order is the order an export reads the table's rows in, for a table whose rows must
+	// arrive in one.
+	order string
 	// shard is a table kept in the shards rather than the shared database.
 	shard bool
 	// across is the column a row is known by in every deployment, for a table whose primary
@@ -132,6 +135,10 @@ var dataTables = []dataTable{
 	{name: "users", customer: "customer_id", vouched: []string{"minted"}},
 	{name: "scheduled_tasks", customer: "customer_id"},
 	{name: "scheduled_task_runs", customer: "customer_id"},
+	// Who asked not to be reached: STOP and START at the source carry on here through the changes.
+	// Revoked rows go first, so one revoked at the source lifts its copy here before the live
+	// row that replaced it arrives, rather than after the import skipped that row beside it.
+	{name: "opt_outs", customer: "customer_id", order: "revoked_at IS NULL"},
 	{name: "recordings", customer: "customer_id", shard: true},
 	{name: "agent_sessions", customer: "customer_id", shard: true},
 	{name: "agent_session_tools", parent: "agent_sessions", parentColumn: "session_id", shard: true},
@@ -659,6 +666,9 @@ func (t dataTable) selectRows(customerID string, secrets []string) (string, []an
 	if t.filter != "" {
 		where += " AND " + t.filter
 	}
+	if t.order != "" {
+		where += " ORDER BY " + t.order
+	}
 	return fmt.Sprintf("SELECT %s FROM %s AS t WHERE %s", subject.String(), t.name, where), []any{customerID}
 }
 
@@ -805,6 +815,15 @@ func (s *Store) importRow(ctx context.Context, db bun.IDB, customerID, table str
 	if spec.copied != "" {
 		where = " WHERE NOT " + spec.copiedBefore(shape, columns)
 	}
+	if table == "opt_outs" {
+		// An opt-out live here under another id is this deployment's, and stays: the row arriving
+		// would break the one-live-row index, and dropping the live one would let the person be
+		// reached again. A revoked row is history beside it, and revokes only the row of its own id,
+		// so a START replayed from the source lifts only what the source sent. Two writes of one
+		// live opt-out here at the same moment can still fail the statement on that index.
+		where = " WHERE NOT (r.revoked_at IS NULL AND EXISTS (SELECT 1 FROM opt_outs AS h WHERE h.customer_id = r.customer_id" +
+			" AND h.recipient = r.recipient AND h.channel = r.channel AND h.revoked_at IS NULL AND h.id <> r.id))"
+	}
 	args := []any{string(row), customerID}
 	if table == "requests" {
 		// The organization a request counts against is the app's here, whatever the row says.
@@ -851,6 +870,11 @@ func (s *Store) importRow(ctx context.Context, db bun.IDB, customerID, table str
 	if table == "phone_numbers" {
 		conflict += " AND NOT " + boughtHere("phone_numbers")
 	}
+	// An opt-out here stays on the recipient and channel it was recorded for: a row arriving
+	// under its id for another one neither moves nor lifts it.
+	if table == "opt_outs" {
+		conflict += " AND opt_outs.recipient = EXCLUDED.recipient AND opt_outs.channel = EXCLUDED.channel"
+	}
 
 	// Every writer of a log draws its id under its customer's lock (AgentLogs.Insert), so ids
 	// commit in order and a reader resuming after one misses none. The row is read through the
@@ -895,6 +919,7 @@ var importedModels = map[string]func() validated{
 	"simulation_cases":       func() validated { return &SimulationCase{} },
 	"scheduled_tasks":        func() validated { return &ScheduledTask{} },
 	"scheduled_task_runs":    func() validated { return &ScheduledTaskRun{} },
+	"opt_outs":               func() validated { return &OptOut{} },
 	"recordings":             func() validated { return &Recording{} },
 	"agent_sessions":         func() validated { return &AgentSession{} },
 	"agent_session_tools":    func() validated { return &agentSessionTools{} },
@@ -1951,10 +1976,12 @@ func dataTableByName(name string) (dataTable, bool) {
 // shared database, empty when none does. A table kept in the shards is left out: it holds the
 // customer's own traffic here, and a shard's pod reads only its own shard, so counting it would
 // make the answer depend on which pod runs. A table that belongs to a customer through a parent
-// is left out too: its rows are written only under a parent of the customer's.
+// is left out too: its rows are written only under a parent of the customer's. So are opt-outs:
+// an import keeps one recorded here live (importRow), so an app holding only those holds nothing
+// an export would write over.
 func (s *Store) HoldingTable(ctx context.Context, customerID string) (string, error) {
 	for _, table := range dataTables {
-		if table.customer == "" || table.shard {
+		if table.customer == "" || table.shard || table.name == "opt_outs" {
 			continue
 		}
 		where := table.customer + " = ?"

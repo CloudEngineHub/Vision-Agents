@@ -843,6 +843,10 @@ A folder whose `agent.yaml` names a `plugins` list now fails to load with `plugi
 
 ## Bug Fixes
 
+### An inbound Slack message goes to the connection an agent binds
+
+With two app connections to the same workspace, the router now picks the connected one that a live agent config binds, instead of the newest (#2185).
+
 ### JavaScript: a reply the model couldn't write keeps its error and Try again
 
 The router finishes a reply the model failed to write as an empty message in the channel. `agentChatTransport` fed it to the `AIConversationController`, which takes a finished reply as the answer and clears the error, so stream-chat-react's "couldn't answer" and Try again showed for a moment and went, leaving the question with no reply under it. While the reply has failed, the transport now leaves out an agent message that finished with no text, attachments or UI and was not cut off; it shows again once the agent answers.

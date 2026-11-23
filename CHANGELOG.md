@@ -861,6 +861,10 @@ An `AgentTool` declared with a `Decodable` arguments type decodes it from the ar
 
 Only a built-in connector takes the OAuth client the deployment keeps in its environment (`<client.env>_MCP_CLIENT_ID` and `_SECRET`) or a record of the operator's app: a custom connector's manifest is its customer's, whatever its `client.registration` and `client.env` say. A data import now holds each connector definition to the rules the API applies to a custom connector, and refuses one the API would refuse with a 400, as it refuses a phone number it cannot take (AI-3474).
 
+### An imported row is held to what the API holds it to
+
+`POST /v1/data/import` and change replays run each row's own validation before writing it, so an import is refused with a 400 naming the field where the API would refuse the same row: a campaign's concurrency above 50 or a config's sandbox over its CPU, memory or disk bounds, among the rest. A moved voice arrives with its id, name and description and without its samples or bindings, whose audio and clone stay with the deployment that made them: add a recording and prepare it again. An import that names `voice_samples` or `voice_bindings` is refused. An imported request is never billable here and counts against the importing app's organization: the one it was last seen under here, else the one it is registered under, else none.
+
 ### A customer can no longer list or speak in another customer's cloned voice
 
 Clones made through `/v1/agents/voices` sit in the deployment's shared provider account, which lists them all as its own. A voice id that another customer's voice was prepared as is now refused, whether it is the session's voice or the `voice_id` of TTS overwrites. The voice library lists only the caller's own clones besides the provider's published voices, previews another customer's clone as not found, and no longer suggests one as the closest voice.

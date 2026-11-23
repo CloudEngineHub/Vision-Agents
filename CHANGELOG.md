@@ -843,6 +843,9 @@ A folder whose `agent.yaml` names a `plugins` list now fails to load with `plugi
 
 ## Bug Fixes
 
+### The Go SDK syncs an agent's directory to a router it was never synced to
+
+`Agent.Sync` skipped a directory whose `.agent_sync` stamp matched it, whichever router the stamp came from, so a directory synced to a local router and then to the hosted one (`go run ./configure` with another `STREAM_ACCELERATION_URL`) answered the hosted router's old config and sent nothing. A matching stamp is now trusted only when the stored config's `sync_hash` is the same hash, as the JavaScript SDK does.
 ### JavaScript: a live UI patch is merged onto the card the router merges it onto
 
 `Conversation` merges an OpenUI patch onto the UI of the latest earlier turn that completed and was not interrupted, whatever its format, as the router does and as Kotlin has since #2089. It used to take the latest OpenUI card it held, so with an A2UI card in between, or after an interrupted reply, the live preview showed a card Stream Chat's copy then replaced. A patch whose base is not OpenUI now shows no UI on its turn, even a preview already merged onto an older card, and Stream Chat's copy is the one that shows.

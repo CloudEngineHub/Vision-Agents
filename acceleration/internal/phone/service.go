@@ -748,6 +748,10 @@ const NumberKey = "phone_number"
 // ErrNoSealer says this deployment has no keyring to seal or open a number's trunk password.
 var ErrNoSealer = errors.New("phone: no key to seal a number's trunk password: set ROUTER_DEV_KEK (local), or ROUTER_AUTH_KEK_V1_WRAPPED with ROUTER_AUTH_KMS_KEY (hosted)")
 
+// ErrNoSealerToCall says this deployment has no keyring to seal the trunk password a vendor
+// fetches on answer, so a call on that vendor cannot be placed.
+var ErrNoSealerToCall = errors.New("phone: no key to seal the trunk password the vendor fetches on answer, so the call cannot be placed: set ROUTER_DEV_KEK (local), or ROUTER_AUTH_KEK_V1_WRAPPED with ROUTER_AUTH_KMS_KEY (hosted)")
+
 // Attach puts a number on the trunk it shares with the customer's other numbers of its
 // vendor, with a rule of its own, and tells the vendor to send calls there. This is what
 // turns a bought number into one that reaches an agent. Without a key to seal the trunk's
@@ -1094,6 +1098,11 @@ func (s *Service) call(ctx context.Context, request CallRequest, sent *bool) (Pl
 	if err != nil {
 		return Placed{}, stack.Wrap(err)
 	}
+	// A vendor that fetches its plan on answer and sends the trunk's password gets it from a
+	// parked bridge, which keeps it sealed: refused before anything is made at Stream.
+	if _, hosted := provider.(AnswerRenderer); hosted && s.sealer == nil && sendsPassword(s.registry, held.Vendor) {
+		return Placed{}, stack.Wrap(fmt.Errorf("phone: %s: %w", held.Vendor, ErrNoSealerToCall))
+	}
 
 	sessionID := request.SessionID
 	if sessionID == "" {
@@ -1438,18 +1447,28 @@ func (s *Service) park(
 	}
 
 	token := uuid.NewString()
-	err := s.store.CallBridges.Insert(ctx, &store.CallBridge{
+	bridge := &store.CallBridge{
 		Token:         token,
 		CustomerID:    customerID,
 		Vendor:        vendor,
 		TrunkURI:      outbound.Bridge.URI,
 		TrunkUsername: outbound.Bridge.Username,
-		TrunkPassword: outbound.Bridge.Password,
 		InitialDigits: outbound.InitialDigits,
 		CallID:        callID,
 		ExpiresAt:     time.Now().UTC().Add(bridgeLifetime),
-	})
-	if err != nil {
+	}
+	// Only a vendor that sends the password is given one, so only its bridge keeps one.
+	if outbound.Bridge.Password != "" {
+		if s.sealer == nil {
+			return "", stack.Wrap(ErrNoSealerToCall)
+		}
+		sealed, err := s.sealer.SealWithAAD(outbound.Bridge.Password, callBridgeAAD(customerID, token))
+		if err != nil {
+			return "", stack.Wrap(fmt.Errorf("phone: seal a parked bridge's trunk password: %w", err))
+		}
+		bridge.TrunkPasswordSealed, bridge.TrunkKEKVersion = sealed, s.sealer.CurrentVersion()
+	}
+	if err := s.store.CallBridges.Insert(ctx, bridge); err != nil {
 		return "", err
 	}
 	return s.publicURL + "/v1/phone/answer/" + token, nil
@@ -1479,11 +1498,34 @@ func (s *Service) Answer(ctx context.Context, token string) (Plan, error) {
 			bridge.Vendor)
 	}
 
+	var password string
+	if len(bridge.TrunkPasswordSealed) > 0 {
+		if s.sealer == nil {
+			return Plan{}, stack.Wrap(ErrNoSealer)
+		}
+		password, err = s.sealer.OpenWithAADVersion(bridge.TrunkPasswordSealed, callBridgeAAD(bridge.CustomerID, token), bridge.TrunkKEKVersion)
+		if err != nil {
+			return Plan{}, stack.Wrap(fmt.Errorf("phone: open a parked bridge's trunk password: %w", err))
+		}
+	}
+
 	return renderer.Answer(Bridge{
 		URI:      bridge.TrunkURI,
 		Username: bridge.TrunkUsername,
-		Password: bridge.TrunkPassword,
+		Password: password,
 	}, bridge.InitialDigits)
+}
+
+// sendsPassword reports whether a vendor presents the trunk's password when it bridges.
+func sendsPassword(registry *Registry, vendor string) bool {
+	declared, _ := registry.Lookup(vendor)
+	return declared.Authenticates() == TrunkPassword
+}
+
+// callBridgeAAD binds a parked bridge's sealed trunk password to its customer and its token,
+// which only the fetch presents.
+func callBridgeAAD(customerID, token string) []byte {
+	return []byte("call_bridges/" + customerID + "/" + token)
 }
 
 // ErrNotPlaced is a call whose context ended before the vendor was asked to dial it: nobody

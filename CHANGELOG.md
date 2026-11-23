@@ -883,6 +883,10 @@ Only a built-in connector takes the OAuth client the deployment keeps in its env
 
 `/v1/data/import`, and a change applied after it, writes a `phone_numbers` row only when its vendor is exactly `sip_trunk`; any other row is skipped without an error. A number bought at a vendor stays in the vendor account of the deployment that bought it, and its bills already move with the requests, so the destination neither holds it nor bills its months again. A customer that moves keeps a bought number by buying or porting it at the destination. A number bought here and still held is never updated or deleted by an imported row or a replayed change, whatever id it names. An imported `sip_trunk` number is held to the API's rules (E.164, a vendor, a cost that is not negative), and no imported number keeps its `dlc_use_case_id`, which names a use case of the source.
 
+### A request counts only toward its own organization's spend grants
+
+A request row's cost is added to a grant it names only when the grant belongs to the row's organization or to its app's (the organization the app is in, or the app itself for an app in none), both as the row is written and when the grant uses are reconciled. A grant scoped to an app, or to its key or user, counts only that app's rows. A use refused because the grant is not the row's is counted on `/metrics` as `router_usage_grant_uses_refused_total`. An imported request names no grant: it was drawn from the grants of the deployment that recorded it.
+
 ### A customer can no longer list or speak in another customer's cloned voice
 
 Clones made through `/v1/agents/voices` sit in the deployment's shared provider account, which lists them all as its own. A voice id that another customer's voice was prepared as is now refused, whether it is the session's voice or the `voice_id` of TTS overwrites. The voice library lists only the caller's own clones besides the provider's published voices, previews another customer's clone as not found, and no longer suggests one as the closest voice.

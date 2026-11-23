@@ -3,6 +3,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -993,6 +994,69 @@ func (s *StoreSuite) TestDeletingAUsersConnectionsRemovesEveryOneOfThemAndNothin
 	}
 }
 
+// TestDeletingAUsersConnectionsDeletesTheirEventSubscriptions: the subscriptions' sealed secrets and
+// callback tokens go with the connections; another user's, the app's and another customer's stay.
+func (s *StoreSuite) TestDeletingAUsersConnectionsDeletesTheirEventSubscriptions() {
+	first := s.connection("acme-app", userOwned("alice"))
+	second := s.connection("acme-app", userOwned("alice"))
+	bob := s.connection("acme-app", userOwned("bob"))
+	app := s.connection("acme-app", nil)
+	elsewhere := s.connection("other-app", userOwned("alice"))
+	hers := []ConnectionEventSubscription{
+		s.eventSubscription("acme-app", first.ID, "config-1", "key-1"),
+		s.eventSubscription("acme-app", first.ID, "config-1", "key-2"),
+		s.eventSubscription("acme-app", second.ID, "config-1", "key-1"),
+	}
+	kept := []ConnectionEventSubscription{
+		s.eventSubscription("acme-app", bob.ID, "config-1", "key-1"),
+		s.eventSubscription("acme-app", app.ID, "config-1", "key-1"),
+		s.eventSubscription("other-app", elsewhere.ID, "config-1", "key-1"),
+		// A row of another customer that names her connection's id: the customer is part of the match.
+		s.eventSubscription("other-app", first.ID, "config-2", "key-1"),
+	}
+
+	_, err := s.store.ConnectorConnections.DeleteUser(s.ctx, "acme-app", "alice")
+
+	s.Require().NoError(err)
+	for _, sub := range hers {
+		_, err := s.store.ConnectionEventSubscriptions.GetByToken(s.ctx, sub.Token)
+		s.ErrorIs(err, ErrNoConnectionEventSubscription, "her subscription %s is gone", sub.Token)
+	}
+	for _, sub := range kept {
+		got, err := s.store.ConnectionEventSubscriptions.GetByToken(s.ctx, sub.Token)
+		s.Require().NoError(err, "subscription %s stays", sub.Token)
+		s.Equal(sub.ID, got.ID)
+	}
+}
+
+// TestAUserDeleteThatFailsKeepsTheirEventSubscriptions: the subscriptions go in the delete's transaction,
+// so a delete that fails leaves them with the connections.
+func (s *StoreSuite) TestAUserDeleteThatFailsKeepsTheirEventSubscriptions() {
+	hers := s.connection("acme-app", userOwned("alice"))
+	sub := s.eventSubscription("acme-app", hers.ID, "config-1", "key-1")
+	s.Require().NoError(s.store.ConnectorAuditEvents.Insert(s.ctx, &ConnectorAuditEvent{
+		CustomerID: "acme-app", ConnectionID: hers.ID, ConnectorID: "acme", OwnerType: OwnerUser,
+		Action: AuditGrantCreated, Reason: AuditReasonConsent, Revision: 2,
+	}))
+	// Another transaction holds her audit row, so the delete's last statement waits until its deadline.
+	holder, err := s.store.GlobalDB().BeginTx(s.ctx, nil)
+	s.Require().NoError(err)
+	defer func() { _ = holder.Rollback() }()
+	_, err = holder.ExecContext(s.ctx, "SELECT 1 FROM connector_audit WHERE connection_id = ? FOR UPDATE", hers.ID)
+	s.Require().NoError(err)
+	ctx, cancel := context.WithTimeout(s.ctx, 500*time.Millisecond)
+	defer cancel()
+
+	_, err = s.store.ConnectorConnections.DeleteUser(ctx, "acme-app", "alice")
+
+	s.Require().ErrorContains(err, "unlink a user's connector audit")
+	s.Require().NoError(holder.Rollback())
+	_, err = s.store.ConnectorConnections.Get(s.ctx, "acme-app", hers.ID)
+	s.Require().NoError(err, "the connection stays")
+	_, err = s.store.ConnectionEventSubscriptions.GetByToken(s.ctx, sub.Token)
+	s.NoError(err, "so does its subscription")
+}
+
 // TestDeletingAUsersConnectionsUnlinksTheirAuditFromTheUser: the rows stay, with no id that
 // leads back to the user; another user's keep theirs.
 func (s *StoreSuite) TestDeletingAUsersConnectionsUnlinksTheirAuditFromTheUser() {
@@ -1292,7 +1356,7 @@ func (s *StoreSuite) TestConnectorConnectionQueryBudgets() {
 	s.Equal(4, s.countQueries(func() {
 		s.Require().NoError(s.store.ConnectorConnections.DeleteUnbound(s.ctx, "acme-app", connections[2].ID))
 	}), "DeleteUnbound")
-	s.Equal(6, s.countQueries(func() {
+	s.Equal(7, s.countQueries(func() {
 		_, err := s.store.ConnectorConnections.DeleteUser(s.ctx, "acme-app", "alice")
 		s.Require().NoError(err)
 	}), "DeleteUser")

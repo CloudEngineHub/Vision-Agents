@@ -615,6 +615,48 @@ func (s *DataMoveSuite) TestAnImportWithBlankLinesIsRead() {
 	s.Equal(int64(rows), imported.Rows)
 }
 
+func (s *DataMoveSuite) TestAnImportWithAnObjectOverSeveralLinesIsToldToWriteOnePerLine() {
+	s.data.createAgentConfig()
+	var lines []string
+	for _, line := range s.export() {
+		encoded, err := json.MarshalIndent(line, "", "  ")
+		s.Require().NoError(err)
+		lines = append(lines, string(encoded))
+	}
+
+	status, failure := s.serverClient.failure(http.MethodPost, "/v1/data/import?full=true", strings.Join(lines, "\n"))
+
+	s.Equal(http.StatusBadRequest, status)
+	s.Contains(failure, "one JSON object per line")
+}
+
+func (s *DataMoveSuite) TestAnImportWithTwoObjectsOnALineIsToldToWriteOnePerLine() {
+	s.data.createAgentConfig()
+	var objects []string
+	for _, line := range s.export() {
+		encoded, err := json.Marshal(line)
+		s.Require().NoError(err)
+		objects = append(objects, string(encoded))
+	}
+
+	status, failure := s.serverClient.failure(http.MethodPost, "/v1/data/import?full=true", strings.Join(objects, ""))
+
+	s.Equal(http.StatusBadRequest, status)
+	s.Contains(failure, "one JSON object per line")
+}
+
+func (s *DataMoveSuite) TestAnImportStopsAtTheLineItRefuses() {
+	agent := s.data.createAgentConfig()
+	exported := s.export()
+	s.instruct(agent.Id, "edited here")
+
+	status, failure := s.serverClient.failure(http.MethodPost, "/v1/data/import?full=true", "{\n"+ndjson(exported))
+
+	s.Equal(http.StatusBadRequest, status)
+	s.Contains(failure, "one JSON object per line")
+	s.Equal("edited here", s.instructionsOf(agent.Id), "no line after the refused one is written")
+}
+
 func (s *DataMoveSuite) TestAnExportWhoseClientStopsReadingIsLetGo() {
 	s.skipOnARouterWithShards()
 	s.seedRowsTooBigToBuffer()

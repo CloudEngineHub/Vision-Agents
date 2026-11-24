@@ -81,6 +81,8 @@ type repos struct {
 	ScheduledTaskRuns              *ScheduledTaskRuns
 	ScheduledTasks                 *ScheduledTasks
 	SessionHomes                   *SessionHomes
+	CallHomes                      *CallHomes
+	OpenLegs                       *OpenLegs
 	SessionTools                   *SessionTools
 	Sessions                       *Sessions
 	SimulationCases                *SimulationCases
@@ -186,6 +188,8 @@ func (s *Store) wire() {
 		ScheduledTaskRuns:              &ScheduledTaskRuns{store: s},
 		ScheduledTasks:                 &ScheduledTasks{store: s},
 		SessionHomes:                   &SessionHomes{store: s},
+		CallHomes:                      &CallHomes{store: s},
+		OpenLegs:                       &OpenLegs{store: s},
 		SessionTools:                   &SessionTools{store: s},
 		Sessions:                       &Sessions{store: s},
 		SimulationCases:                &SimulationCases{store: s},

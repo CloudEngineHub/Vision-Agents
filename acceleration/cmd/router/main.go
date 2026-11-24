@@ -1235,6 +1235,7 @@ func run(settings config.Config, logger *slog.Logger) error {
 		// leg whose row was lost is recorded again. Months of numbers and of 10DLC campaigns are
 		// billed by jobs of their own (router usage numbers, router usage dlc).
 		go telephony.RunLegSweep(ctx, legSweepEvery)
+		go telephony.RunOpenLegsHeal(ctx, store.HealOpenLegsEvery)
 		// Deferred here, it runs after the drain and sessions.Shutdown, so the legs a webhook or
 		// a session still kept get their last write, and before the usage writer closes.
 		defer func() {

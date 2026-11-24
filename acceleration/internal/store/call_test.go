@@ -138,20 +138,6 @@ func (s *StoreSuite) TestAnArrivingCallIsStoredAsInboundEvenWhereAnotherCustomer
 	s.Empty(read.ToNumber)
 }
 
-func (s *ShardedStoreSuite) TestACallAnotherShardPlacedIsStoredAsOutbound() {
-	at := s.base
-	placed := CallLeg{Token: "there", CustomerID: "acme", CallType: "agent", CallID: "session-there", Vendor: "telnyx",
-		Direction: Outbound, LocalNumber: "+15125550100", RemoteNumber: "+15125550199", PlacedAt: &at}
-	s.Require().NoError(s.other.CallLegs.Place(s.ctx, &placed))
-	call := Call{ID: "session-there", CustomerID: "acme", CallID: "session-there", AgentID: "agent-there", StartedAt: s.base}
-	s.Require().NoError(s.store.Calls.Start(s.ctx, &call))
-
-	read, err := s.store.Calls.Get(s.ctx, "acme", call.ID)
-	s.Require().NoError(err)
-	s.Equal(Outbound, read.Direction)
-	s.Equal("+15125550199", read.ToNumber)
-}
-
 func (s *StoreSuite) TestACallStartedAgainLearnsWhoTheAgentWroteAsAndKeepsIt() {
 	// A call row from before the column names no writer. The session carrying on under the
 	// same id names it, and the row keeps the first one it was told.

@@ -5,13 +5,18 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/GetStream/Vision-Agents/acceleration/internal/node"
+	"github.com/GetStream/Vision-Agents/acceleration/internal/phone"
+	"github.com/GetStream/Vision-Agents/acceleration/internal/phone/outcome"
 	"github.com/GetStream/Vision-Agents/acceleration/internal/store"
 )
 
@@ -99,4 +104,113 @@ func (s *CrossShardSessionSuite) TestASessionLivingInAShardNoNodeAnswersIsUnavai
 	var answered ErrorResponse
 	s.Require().NoError(json.Unmarshal(payload, &answered))
 	s.Equal(codeShardUnavailable, answered.Error.Code)
+}
+
+// CallShardSuite covers what a vendor or Stream says about a call, delivered to a node in a
+// shard other than the one the call lives in.
+type CallShardSuite struct {
+	RouterSuite
+
+	// otherPhone is the phone service of the node in the other shard, over its own store.
+	otherPhone *phone.Service
+}
+
+func TestCallShardSuite(t *testing.T) {
+	runSuite(t, new(CallShardSuite))
+}
+
+func (s *CallShardSuite) SetupSuite() {
+	s.shard, s.otherShard = "here", "there"
+	s.otherShardApart = true
+	s.phoneVendors = s.unreachableVendors()
+	s.phoneOnChat = true
+	s.RouterSuite.SetupSuite()
+	service, err := phone.NewService(phone.ServiceOptions{
+		Registry: s.phoneVendors,
+		Stream:   phone.NewStreamFromClient(s.chat.Client),
+		Store:    s.otherStore,
+		Now:      s.phoneNow,
+		Logger:   slog.New(slog.DiscardHandler),
+	})
+	s.Require().NoError(err)
+	s.otherPhone = service
+	s.otherNodeHolding(nil, s.sealer, slog.New(slog.DiscardHandler), func(options *Options) {
+		options.Phone = s.otherPhone
+	})
+}
+
+func (s *CallShardSuite) SetupTest() {
+	s.useFixture("standard")
+}
+
+func (s *CallShardSuite) TestAStatusForACallAnotherShardPlacedIsTakenThere() {
+	ctx := context.Background()
+	callID := s.utils.uuid()
+	token, err := s.otherPhone.Outcomes().Placed(ctx, outcome.Call{
+		Key: outcome.Key{
+			CustomerID: s.customerID(), CallType: "default", CallID: callID,
+			Local: s.utils.number(), Remote: s.utils.number(),
+		},
+		Vendor:  "telnyx",
+		Reports: true,
+	})
+	s.Require().NoError(err)
+
+	request, err := http.NewRequest(http.MethodPost, s.server.URL+"/v1/phone/status/"+token,
+		strings.NewReader(url.Values{"CallStatus": {"busy"}}.Encode()))
+	s.Require().NoError(err)
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response, err := s.server.Client().Do(request)
+	s.Require().NoError(err)
+	s.Require().NoError(response.Body.Close())
+
+	s.Equal(http.StatusNoContent, response.StatusCode)
+	call, err := s.otherPhone.Outcomes().Read(ctx, s.customerID(), callID)
+	s.Require().NoError(err)
+	s.Equal(outcome.Busy, call.Outcome)
+}
+
+func (s *CallShardSuite) TestAPlanFetchForAShardNoNodeAnswersIsAnsweredForTheVendorToRetry() {
+	status, failure := s.unauthenticatedClient.failure(http.MethodGet, "/v1/phone/answer/gone."+s.utils.uuid(), nil)
+
+	s.Equal(http.StatusServiceUnavailable, status)
+	s.Contains(failure, errCallShardDown.Message)
+}
+
+func (s *CallShardSuite) TestAnArrivingCallPlacedInAShardNoNodeAnswersIsDeliveredAgain() {
+	ctx := context.Background()
+	options := s.storeOptions
+	options.Shard = "gone"
+	gone, err := store.OpenShards(options)
+	s.Require().NoError(err)
+	s.T().Cleanup(func() { s.NoError(gone.Close()) })
+	callID := s.utils.uuid()
+	s.Require().NoError(gone.CallResources.Insert(ctx, &store.CallResource{
+		TrunkID: "trunk-" + callID, RouteID: "route-" + callID, CallType: "default", CallID: callID,
+		CustomerID: s.customerID(), Shared: true,
+	}))
+
+	body := arrivingCallAt("default:"+callID, time.Now().UTC())
+	status, failure := s.deliver("/v1/phone/hooks/stream", body, sign(body, suiteStreamSecret))
+
+	s.Equal(http.StatusServiceUnavailable, status, "a call another shard placed was taken where it landed")
+	s.Contains(failure, errCallShardDown.Message)
+}
+
+func (s *CallShardSuite) TestTheEndOfACallAnotherShardMadeIsTakenThere() {
+	ctx := context.Background()
+	callID := s.utils.uuid()
+	s.Require().NoError(s.otherStore.CallResources.Insert(ctx, &store.CallResource{
+		TrunkID: "trunk-" + callID, RouteID: "route-" + callID, CallType: "default", CallID: callID,
+		CustomerID: s.customerID(), Shared: true,
+	}))
+
+	s.Require().Equal(http.StatusOK, s.signedly("/v1/phone/hooks/stream", fmt.Sprintf(
+		`{"type":"call.session_ended","call_cid":"default:%s","session_id":"session-1","created_at":%q,`+
+			`"call":{"cid":"default:%s","id":"%s","type":"default","custom":{}}}`,
+		callID, time.Now().UTC().Format(time.RFC3339), callID, callID)))
+
+	left, err := s.otherStore.CallResources.Select(ctx, store.AppScope{Unpinned: true}, "default", callID)
+	s.Require().NoError(err)
+	s.Empty(left, "the call's end never reached the shard it lives in")
 }

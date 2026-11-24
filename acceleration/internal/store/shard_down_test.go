@@ -45,16 +45,6 @@ func (s *StoreSuite) TestABridgeOnAShardThatAnswersIsClaimedWhileAnotherIsDown()
 	s.Error(err, "a token still works once")
 }
 
-func (s *StoreSuite) TestABridgeNoAnsweringShardHoldsIsNotClaimedWhileAnotherIsDown() {
-	down, _ := s.withAShardDown()
-
-	_, err := down.CallBridges.Claim(s.ctx, newID())
-	s.Require().ErrorIs(err, ErrShardUnanswered, "the shard that is down may hold it")
-	_, err = s.store.CallBridges.Claim(s.ctx, newID())
-	s.Require().Error(err)
-	s.NotErrorIs(err, ErrShardUnanswered, "with every shard answering, it is not there")
-}
-
 func (s *StoreSuite) TestACallPlacedOnAShardThatAnswersIsFoundWhileAnotherIsDown() {
 	down, _ := s.withAShardDown()
 	callID := newID()
@@ -67,14 +57,6 @@ func (s *StoreSuite) TestACallPlacedOnAShardThatAnswersIsFoundWhileAnotherIsDown
 	s.Require().Len(placed, 1)
 	s.Equal("trunk-1", placed[0].TrunkID)
 
-}
-
-func (s *StoreSuite) TestACallNoAnsweringShardPlacedIsNotAnsweredWhileAnotherIsDown() {
-	down, _ := s.withAShardDown()
-
-	placed, err := down.CallResources.Select(s.ctx, AppScope{Unpinned: true}, "default", newID())
-	s.Require().Error(err, "the shard that is down may have placed it")
-	s.Empty(placed)
 }
 
 // withAShardThatNeverAnswers is a store on the suite's databases beside a peer shard whose

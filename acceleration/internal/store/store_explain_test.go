@@ -26,10 +26,10 @@ import (
 const seedRows = 100_000
 
 // hotTables are the tables that grow with traffic, which no statement may read in full.
-var hotTables = regexp.MustCompile(`\b(requests|agent_sessions|calls|call_legs|agent_logs|image_jobs|session_homes)\b`)
+var hotTables = regexp.MustCompile(`\b(requests|agent_sessions|calls|call_legs|agent_logs|image_jobs|session_homes|call_homes)\b`)
 
 // seqScans finds a sequential scan of one of hotTables in a plan.
-var seqScans = regexp.MustCompile(`Seq Scan on (requests|agent_sessions|calls|call_legs|agent_logs|image_jobs|session_homes)\b`)
+var seqScans = regexp.MustCompile(`Seq Scan on (requests|agent_sessions|calls|call_legs|agent_logs|image_jobs|session_homes|call_homes)\b`)
 
 // seededDatabase fills a database of its own with seedRows of each hot table, once per run of the
 // suite: the suite's databases are emptied before every test, and seeding them for each would
@@ -64,7 +64,7 @@ func (s *StoreSuite) seededDatabase() string {
 		// Statistics read off every row rather than a sample, so the planner breaks a tie
 		// between two indexes the same way every run.
 		_, err := tx.ExecContext(ctx, "SET LOCAL default_statistics_target = 1000; "+
-			"ANALYZE agent_sessions, calls, call_legs, requests, agent_logs, image_jobs, session_homes")
+			"ANALYZE agent_sessions, calls, call_legs, requests, agent_logs, image_jobs, session_homes, call_homes")
 		return err
 	}))
 	s.seededDSN = dsn
@@ -88,6 +88,10 @@ var seedStatements = []string{
 
 	`INSERT INTO session_homes (customer_id, session_id, shard, opened_at)
 	SELECT 'customer-' || (n % 200), 'seeded-session-' || n, 'shard-' || (n % 4), at
+	FROM generate_series(1, ?1) AS n, LATERAL (SELECT ?0::timestamptz - (?1 - n) * interval '77 seconds' AS at) AS t`,
+
+	`INSERT INTO call_homes (call_id, call_type, stream_app_pk, customer_id, shard, opened_at)
+	SELECT 'stream-' || n, 'default', CASE WHEN n % 7 <> 0 THEN 1 + n % 3 ELSE 0 END, 'customer-' || (n % 200), 'shard-' || (n % 4), at
 	FROM generate_series(1, ?1) AS n, LATERAL (SELECT ?0::timestamptz - (?1 - n) * interval '77 seconds' AS at) AS t`,
 
 	`INSERT INTO calls (id, session_id, customer_id, stream_app_pk, call_type, call_id, agent_id, conversation_id,
@@ -497,6 +501,13 @@ func (s *StoreSuite) TestEveryHotTableIsReadByIndex() {
 		{name: "SessionHomes.Of", index: "session_homes_pkey", sharded: true, run: func(ctx context.Context, store *Store) error {
 			_, err := store.SessionHomes.Of(ctx, "customer-7", "seeded-session-7")
 			return err
+		}},
+		{name: "CallHomes.Elsewhere", index: "call_homes_pkey", sharded: true, run: func(ctx context.Context, store *Store) error {
+			_, err := store.CallHomes.Elsewhere(ctx, AppScope{App: 2, Unpinned: true}, "default", "stream-8")
+			return err
+		}},
+		{name: "CallHomes.sweep", index: "call_homes_shard_opened_idx", sharded: true, run: func(ctx context.Context, store *Store) error {
+			return store.CallHomes.sweep(ctx, time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC))
 		}},
 		{name: "Sessions.Exists of another shard's", index: "session_homes_pkey", sharded: true, run: func(ctx context.Context, store *Store) error {
 			_, err := store.Sessions.Exists(ctx, "unseeded-session")

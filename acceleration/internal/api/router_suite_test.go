@@ -212,6 +212,9 @@ type RouterSuite struct {
 	store *store.Store
 	// otherStore is the store of otherNode, on the same databases, named for its shard.
 	otherStore *store.Store
+	// otherShardApart keeps otherStore's shard rows in a database of their own, as a shard in
+	// another region keeps them, for a suite to set before it starts.
+	otherShardApart bool
 	configs    *store.Store
 	live       *live.Client
 	sealer     *auth.Sealer
@@ -631,9 +634,15 @@ func (s *RouterSuite) SetupSuite() {
 	if s.otherShard != s.shard {
 		otherOptions := options
 		otherOptions.Shard = s.otherShard
+		if s.otherShardApart {
+			otherOptions.ShardDSN = testenv.Database(options.DSN, "othershard")
+		}
 		s.otherStore, err = store.OpenShards(otherOptions)
 		s.Require().NoError(err)
 		s.T().Cleanup(func() { s.Require().NoError(s.otherStore.Close()) })
+		if s.otherShardApart {
+			s.Require().NoError(migrate(ctx, s.otherStore, otherOptions.ShardDSN))
+		}
 	}
 	// Registered before everything that records, so it runs once all of it has closed and
 	// written what it held.

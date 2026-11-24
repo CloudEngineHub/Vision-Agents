@@ -1008,23 +1008,71 @@ func transactionStart(ctx context.Context, db bun.IDB) (time.Time, error) {
 	return now, err
 }
 
-// RecordedUsage is which of the usage ids any shard holds a row for: work billed before, which
-// is not billed again.
+// RecordedUsage is which of the usage ids this shard holds a row for: work billed before, which
+// is not billed again. A leg's usage id names the leg, which only its shard bills.
 func (s *Store) RecordedUsage(ctx context.Context, usageIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
 	recorded := make(map[uuid.UUID]bool, len(usageIDs))
 	for batch := range slices.Chunk(usageIDs, 1000) {
-		lists, err := everyShard(ctx, s, func(ctx context.Context, db bun.IDB) ([]uuid.UUID, error) {
-			var found []uuid.UUID
-			err := db.NewSelect().Model((*Request)(nil)).Column("usage_id").
-				Where("usage_id IN (?)", bun.In(batch)).Scan(ctx, &found)
-			return found, err
-		})
+		var found []uuid.UUID
+		err := s.shard.NewSelect().Model((*Request)(nil)).Column("usage_id").
+			Where("usage_id IN (?)", bun.In(batch)).Scan(ctx, &found)
 		if err != nil {
 			return nil, stack.Wrap(fmt.Errorf("store: recorded usage: %w", err))
 		}
-		for _, id := range slices.Concat(lists...) {
+		for _, id := range found {
 			recorded[id] = true
 		}
 	}
 	return recorded, nil
+}
+
+// usageClaim is the shard that bills a usage id any shard could bill.
+type usageClaim struct {
+	bun.BaseModel `bun:"table:usage_claims"`
+
+	UsageID uuid.UUID `bun:"usage_id,pk"`
+	Shard   string    `bun:"shard,notnull"`
+}
+
+// UsageToBill is which of the usage ids, each the same whichever shard bills it (a number's
+// month, a 10DLC fee), this shard is to bill: those it holds no row for, that no other shard
+// claimed first. The ones it bills it claims, in the shared database, and bills again only
+// while its own row is missing.
+func (s *Store) UsageToBill(ctx context.Context, usageIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
+	recorded, err := s.RecordedUsage(ctx, usageIDs)
+	if err != nil {
+		return nil, err
+	}
+	due := make(map[uuid.UUID]bool, len(usageIDs))
+	for _, id := range usageIDs {
+		if !recorded[id] {
+			due[id] = true
+		}
+	}
+	if !s.homed || len(due) == 0 {
+		return due, nil
+	}
+	claims := make([]usageClaim, 0, len(due))
+	for id := range due {
+		claims = append(claims, usageClaim{UsageID: id, Shard: s.ShardName()})
+	}
+	for batch := range slices.Chunk(claims, 1000) {
+		if _, err := s.global.NewInsert().Model(&batch).On("CONFLICT DO NOTHING").Exec(ctx); err != nil {
+			return nil, stack.Wrap(fmt.Errorf("store: claim usage: %w", err))
+		}
+		ids := make([]uuid.UUID, len(batch))
+		for i, claim := range batch {
+			ids[i] = claim.UsageID
+		}
+		var elsewhere []uuid.UUID
+		err := s.global.NewSelect().Model((*usageClaim)(nil)).Column("usage_id").
+			Where("usage_id IN (?)", bun.In(ids)).Where("shard <> ?", s.ShardName()).Scan(ctx, &elsewhere)
+		if err != nil {
+			return nil, stack.Wrap(fmt.Errorf("store: claim usage: %w", err))
+		}
+		for _, id := range elsewhere {
+			delete(due, id)
+		}
+	}
+	return due, nil
 }

@@ -153,6 +153,11 @@ func (s *Server) nodeFor(r *http.Request) (string, bool, error) {
 var errHomeShardDown = APIError{Type: ErrorTypeUnavailable, Code: codeShardUnavailable,
 	Message: "the region this session lives in could not be reached"}
 
+// errCallShardDown is a call whose shard has no node answering: its legs and lines are there
+// alone.
+var errCallShardDown = APIError{Type: ErrorTypeUnavailable, Code: codeShardUnavailable,
+	Message: "the region this call lives in could not be reached"}
+
 // homeNode is a node of the shard a session nothing runs lives in, when that is another shard:
 // it is read and carried on there, where its rows are.
 func (s *Server) homeNode(ctx context.Context, customer, id string) (string, bool, error) {

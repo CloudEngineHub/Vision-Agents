@@ -170,6 +170,16 @@ TABLE business_profiles
     website_url text NOT NULL DEFAULT ''::text
     CONSTRAINT business_profiles_pkey PRIMARY KEY (customer_id)
 
+TABLE call_homes
+    call_id text NOT NULL
+    call_type text NOT NULL
+    customer_id text NOT NULL
+    opened_at timestamp with time zone NOT NULL DEFAULT now()
+    shard text NOT NULL
+    stream_app_pk bigint NOT NULL
+    CONSTRAINT call_homes_pkey PRIMARY KEY (call_id, call_type, stream_app_pk, customer_id)
+    CREATE INDEX call_homes_shard_opened_idx ON public.call_homes USING btree (shard, opened_at)
+
 TABLE campaign_attempts
     attempt integer NOT NULL
     call_id text NOT NULL DEFAULT ''::text
@@ -1460,6 +1470,12 @@ TABLE telephony_suspensions
     suspended_at timestamp with time zone NOT NULL
     suspended_by text NOT NULL
     CONSTRAINT telephony_suspensions_pkey PRIMARY KEY (customer_id)
+
+TABLE usage_claims
+    claimed_at timestamp with time zone NOT NULL DEFAULT now()
+    shard text NOT NULL
+    usage_id uuid NOT NULL
+    CONSTRAINT usage_claims_pkey PRIMARY KEY (usage_id)
 
 TABLE usage_resets
     actor text NOT NULL

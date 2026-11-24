@@ -409,6 +409,7 @@ func (m *Manager) channelTeam(ctx context.Context, spec Spec) (string, error) {
 // session would hold a model session and a place in a call that nobody holds a handle to.
 func (m *Manager) Create(ctx context.Context, spec Spec) (_ *Session, failure error) {
 	began := time.Now()
+	generated := spec.ID == ""
 	if err := spec.Normalize(); err != nil {
 		return nil, stack.Wrap(err)
 	}
@@ -447,8 +448,9 @@ func (m *Manager) Create(ctx context.Context, spec Spec) (_ *Session, failure er
 	}
 	// The id is the row's primary key whoever owns it, so one somebody already used would
 	// write this session over theirs. A reopened one is the same session, its owner checked
-	// by whoever reopened it.
-	if m.options.Store != nil && spec.Reopened.IsZero() {
+	// by whoever reopened it. One generated just now is a UUIDv7 nobody has, and asking every
+	// shard about it would refuse the session whenever any one of them is down.
+	if m.options.Store != nil && spec.Reopened.IsZero() && !generated {
 		taken, err := m.options.Store.Sessions.Exists(ctx, spec.ID)
 		if err != nil {
 			return nil, stack.Wrap(err)
@@ -492,7 +494,7 @@ func (m *Manager) Create(ctx context.Context, spec Spec) (_ *Session, failure er
 
 	// The Stream app the session acts in is settled once, before anything is done there,
 	// and the whole session keeps it: its call, its transcript and the rows it writes.
-	stream, err := m.stream(ctx, spec)
+	stream, err := m.stream(ctx, spec, generated && spec.ownCall)
 	if err != nil {
 		return nil, err
 	}
@@ -2166,7 +2168,10 @@ func (m *Manager) guardrail(ctx context.Context, spec Spec, stream streamapp.Ide
 // stream is the Stream app a new session acts in. A deployment with no Stream app still
 // holds a text conversation, so having none is not an error here: what needs one fails
 // where it needs it.
-func (m *Manager) stream(ctx context.Context, spec Spec) (streamapp.Bound, error) {
+//
+// newCall is a call named after an id generated for this session, which no line can have been
+// made for yet, so no shard is asked about its lines.
+func (m *Manager) stream(ctx context.Context, spec Spec, newCall bool) (streamapp.Bound, error) {
 	nowhere := streamapp.Bound{Identity: streamapp.Identity{CustomerID: spec.CustomerID}}
 	if m.options.Stream == nil {
 		return nowhere, nil
@@ -2181,7 +2186,7 @@ func (m *Manager) stream(ctx context.Context, spec Spec) (streamapp.Bound, error
 	}
 	// A call that already has lines, a number's or a placed call's, is in the app they were
 	// made in, and the agent has to join it there.
-	if m.options.Store != nil && spec.CallID != "" && !spec.Text {
+	if m.options.Store != nil && spec.CallID != "" && !spec.Text && !newCall {
 		pin, found, err := m.options.Store.CallResources.Pin(ctx, spec.CustomerID, spec.CallType, spec.CallID)
 		if err != nil {
 			return streamapp.Bound{}, err

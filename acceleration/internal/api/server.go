@@ -390,6 +390,7 @@ type Server struct {
 	dataRetention      time.Duration
 	exportWritesWait   time.Duration
 	exportLineWait     time.Duration
+	importLineWait     time.Duration
 	exportWait         time.Duration
 	quota              *quota.Limiter
 	policies           *policy.Enforcer
@@ -398,6 +399,9 @@ type Server struct {
 	// exports a place for each export running on it, of maxExports.
 	exporting sync.Map
 	exports   chan struct{}
+	// importing and imports are the same for imports, of maxImports.
+	importing sync.Map
+	imports   chan struct{}
 	// healthLogs throttles the line a dependency that did not answer the health check logs:
 	// every probe asks.
 	healthLogs quota.Throttle
@@ -609,8 +613,10 @@ func NewServer(options Options, with ...Option) (*Server, error) {
 		dataRetention:      retention,
 		exportWritesWait:   exportWritesWait,
 		exportLineWait:     exportLineWait,
+		importLineWait:     importLineWait,
 		exportWait:         exportWait,
 		exports:            make(chan struct{}, maxExports),
+		imports:            make(chan struct{}, maxImports),
 		scheduledPoll:      2 * time.Second,
 		scheduledPeerWait:  30 * time.Second,
 		replyPoll:          100 * time.Millisecond,

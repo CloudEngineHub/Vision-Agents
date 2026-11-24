@@ -131,7 +131,7 @@ func (s *StoreSuite) TestBranchMessageQueryBudgets() {
 	}
 	s.withinQueryBudgets([]queryBudget{
 		{"BranchMessages.UpsertMany", 1, 0, func() error { return s.store.BranchMessages.UpsertMany(s.ctx, messages) }},
-		{"BranchMessages.Select", 0, 1, func() error {
+		{"BranchMessages.Select", 1, 0, func() error {
 			listed, err := s.store.BranchMessages.Select(s.ctx, "app", "branched", []string{"response-01", "response-02"})
 			s.Len(listed, 2)
 			return err

@@ -192,7 +192,7 @@ func (s *ShardedStoreSuite) TestOneRouterOfEachShardShips() {
 	s.T().Cleanup(func() { s.NoError(second.Close()) })
 	ctx, cancel := context.WithCancel(s.ctx)
 	var running sync.WaitGroup
-	shippers := []*StatsShipper{}
+	shippers := []*Shipper{}
 	for _, router := range []*Store{s.store, second, s.other} {
 		shipper := router.StatsShipper(slog.New(slog.DiscardHandler), 10*time.Millisecond)
 		shippers = append(shippers, shipper)

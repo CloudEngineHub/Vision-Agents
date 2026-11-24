@@ -36,6 +36,9 @@ const peerConns = 8
 type Options struct {
 	// DSN is the database every shard shares.
 	DSN string
+	// Shard names this shard, as the router's shard setting does. Empty names it by the
+	// Shards entry of its DSN, or by a digest of the DSN.
+	Shard string
 	// ShardDSN is this shard's, where the calls it runs are written. Empty is DSN.
 	ShardDSN string
 	// Shards is every shard's DSN by name, this one's included. Reads of calls, sessions and
@@ -97,6 +100,10 @@ func OpenShards(options Options) (*Store, error) {
 			s.shardNames = append(s.shardNames, name)
 		}
 	}
+	if options.Shard != "" {
+		s.shardNames[0] = options.Shard
+	}
+	s.homed = options.Shard != "" || s.Sharded()
 	// Wired first: the shared Redis client tells Users of stale keys as soon as it connects.
 	s.wire()
 	if err := s.openRedis(options); err != nil {
@@ -111,6 +118,9 @@ func unnamedShard(dsn string) string {
 	sum := sha256.Sum256([]byte(dsn))
 	return "dsn:" + hex.EncodeToString(sum[:8])
 }
+
+// ShardName names this shard.
+func (s *Store) ShardName() string { return s.shardNames[0] }
 
 // Sharded reports whether this shard's calls are kept apart from the shared database.
 func (s *Store) Sharded() bool { return s.shard != s.global }

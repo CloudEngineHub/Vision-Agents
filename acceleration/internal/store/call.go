@@ -240,33 +240,26 @@ func (r *Calls) Review(ctx context.Context, customerID, id, summary string, scor
 	type reviewed struct {
 		SessionID sql.NullString `bun:"session_id"`
 	}
-	lists, err := everyShard(ctx, r.store, func(ctx context.Context, db bun.IDB) ([]reviewed, error) {
-		var calls []reviewed
-		_, err := db.NewUpdate().Model((*Call)(nil)).
-			Set("summary = ?", summary).
-			Set("review_score = ?", score).
-			Set("review_notes = ?", notes).
-			Where("id = ?", id).
-			Where("customer_id = ?", customerID).
-			Returning("session_id").
-			Exec(ctx, &calls)
-		return calls, err
-	})
+	var calls []reviewed
+	_, err := r.store.shard.NewUpdate().Model((*Call)(nil)).
+		Set("summary = ?", summary).
+		Set("review_score = ?", score).
+		Set("review_notes = ?", notes).
+		Where("id = ?", id).
+		Where("customer_id = ?", customerID).
+		Returning("session_id").
+		Exec(ctx, &calls)
 	if err != nil {
 		return stack.Wrap(fmt.Errorf("store: review call: %w", err))
 	}
-	var sessions []string
-	found := false
-	for _, calls := range lists {
-		for _, call := range calls {
-			found = true
-			if call.SessionID.Valid {
-				sessions = append(sessions, call.SessionID.String)
-			}
-		}
-	}
-	if !found {
+	if len(calls) == 0 {
 		return unknownCall(id)
+	}
+	var sessions []string
+	for _, call := range calls {
+		if call.SessionID.Valid {
+			sessions = append(sessions, call.SessionID.String)
+		}
 	}
 	// The session carries the score too, so a session list filters and sorts on it without a
 	// join. A call whose session was deleted or never kept has nothing to write to, which is
@@ -274,13 +267,11 @@ func (r *Calls) Review(ctx context.Context, customerID, id, summary string, scor
 	if len(sessions) == 0 {
 		return nil
 	}
-	_, err = onEveryShard(ctx, r.store, func(ctx context.Context, db bun.IDB) (sql.Result, error) {
-		return db.NewUpdate().Model((*AgentSession)(nil)).
-			Set("review_score = ?", score).
-			Where("id IN (?)", bun.In(sessions)).
-			Where("customer_id = ?", customerID).
-			Exec(ctx)
-	})
+	_, err = r.store.shard.NewUpdate().Model((*AgentSession)(nil)).
+		Set("review_score = ?", score).
+		Where("id IN (?)", bun.In(sessions)).
+		Where("customer_id = ?", customerID).
+		Exec(ctx)
 	if err != nil {
 		return stack.Wrap(fmt.Errorf("store: review call: session score: %w", err))
 	}
@@ -293,15 +284,12 @@ func (r *Calls) Get(ctx context.Context, customerID, id string) (Call, error) {
 		return Call{}, stack.Wrap(errors.New("store: a customer and a call id are required"))
 	}
 
-	call, err := whicheverShard(ctx, r.store, func(ctx context.Context, db bun.IDB) (Call, error) {
-		var call Call
-		err := db.NewSelect().Model(&call).
-			Where("id = ?", id).
-			Where("customer_id = ?", customerID).
-			Limit(1).
-			Scan(ctx)
-		return call, err
-	})
+	var call Call
+	err := r.store.shard.NewSelect().Model(&call).
+		Where("id = ?", id).
+		Where("customer_id = ?", customerID).
+		Limit(1).
+		Scan(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Call{}, unknownCall(id)
 	}
@@ -351,17 +339,14 @@ func (r *Calls) LastVoiced(ctx context.Context, customerID, sessionID string) (C
 		return Call{}, stack.Wrap(errors.New("store: a customer and a session id are required"))
 	}
 
-	call, err := whicheverShard(ctx, r.store, func(ctx context.Context, db bun.IDB) (Call, error) {
-		var call Call
-		err := db.NewSelect().Model(&call).
-			Where("c.customer_id = ?", customerID).
-			Where("c.session_id = ?", sessionID).
-			Where("c.call_id <> ''").
-			Order("c.started_at DESC").
-			Limit(1).
-			Scan(ctx)
-		return call, err
-	})
+	var call Call
+	err := r.store.shard.NewSelect().Model(&call).
+		Where("c.customer_id = ?", customerID).
+		Where("c.session_id = ?", sessionID).
+		Where("c.call_id <> ''").
+		Order("c.started_at DESC").
+		Limit(1).
+		Scan(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Call{}, unknownCall(sessionID)
 	}

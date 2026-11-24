@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -213,35 +214,43 @@ ON CONFLICT (shard, %[3]s) DO UPDATE SET %[4]s`, table.name, columns, strings.Jo
 	return nil
 }
 
-// StatsShipper ships this shard's stats to the shared database every minute (Store.ShipStats).
-// Every router of a deployment with shards runs one, and the one holding the shard's stats lock
-// ships; the others try the lock again at the next tick.
-type StatsShipper struct {
-	store  *Store
-	lock   *ShipLock
-	logger *slog.Logger
-	every  time.Duration
+// Shipper ships what this shard keeps that the shared database answers for every shard: its
+// stats every minute (Store.ShipStats), and its sessions' homes and list rows every few seconds
+// (Store.ShipIndex). Every router of a deployment with shards runs one of each, and the one
+// holding the shard's lock for it ships; the others try the lock again at the next tick.
+type Shipper struct {
+	lock    *ShipLock
+	logger  *slog.Logger
+	every   time.Duration
+	timeout time.Duration
+	what    string
+	run     func(context.Context, time.Time) error
 	// holding is whether the last tick held the lock and shipped.
 	holding atomic.Bool
 }
 
 // StatsShipper returns a shipper of this shard's stats, shipping every interval, or every
 // minute for none; Run starts it.
-func (s *Store) StatsShipper(logger *slog.Logger, every time.Duration) *StatsShipper {
-	if every <= 0 {
-		every = statsShipEvery
-	}
-	return &StatsShipper{store: s, lock: s.StatsShipLock(), logger: logger, every: every}
+func (s *Store) StatsShipper(logger *slog.Logger, every time.Duration) *Shipper {
+	return &Shipper{lock: s.StatsShipLock(), logger: logger, every: cmp.Or(every, statsShipEvery),
+		timeout: statsShipTimeout, what: "stats", run: s.ShipStats}
+}
+
+// IndexShipper returns a shipper of this shard's session homes and list rows, shipping every
+// interval, or every indexShipEvery for none; Run starts it.
+func (s *Store) IndexShipper(logger *slog.Logger, every time.Duration) *Shipper {
+	return &Shipper{lock: &ShipLock{db: s.shard, key: "router.index.ship"}, logger: logger,
+		every: cmp.Or(every, indexShipEvery), timeout: statsShipTimeout, what: "index", run: s.ShipIndex}
 }
 
 // Run ships at once and then every interval until ctx is done, and then gives the lock back.
-func (p *StatsShipper) Run(ctx context.Context) {
+func (p *Shipper) Run(ctx context.Context) {
 	defer p.lock.Release()
 	ticker := time.NewTicker(p.every)
 	defer ticker.Stop()
 	for {
 		if err := p.ship(ctx); err != nil && ctx.Err() == nil {
-			p.logger.Error("could not ship this shard's stats, trying again", "in", p.every, "error", err)
+			p.logger.Error("could not ship this shard's "+p.what+", trying again", "in", p.every, "error", err)
 		}
 		select {
 		case <-ctx.Done():
@@ -252,11 +261,11 @@ func (p *StatsShipper) Run(ctx context.Context) {
 }
 
 // Holding reports whether this shipper held its shard's lock and shipped at its last tick.
-func (p *StatsShipper) Holding() bool { return p.holding.Load() }
+func (p *Shipper) Holding() bool { return p.holding.Load() }
 
 // ship ships when this router holds the lock. A holder whose ship fails lets the lock go, so
 // that a router that can ship takes it at its next tick.
-func (p *StatsShipper) ship(ctx context.Context) error {
+func (p *Shipper) ship(ctx context.Context) error {
 	locking, cancel := context.WithTimeout(ctx, statsLockTimeout)
 	held, err := p.lock.Hold(locking)
 	cancel()
@@ -264,9 +273,9 @@ func (p *StatsShipper) ship(ctx context.Context) error {
 	if err != nil || !held {
 		return err
 	}
-	shipping, cancel := context.WithTimeout(ctx, statsShipTimeout)
+	shipping, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
-	if err := p.store.ShipStats(shipping, time.Now()); err != nil {
+	if err := p.run(shipping, time.Now()); err != nil {
 		p.lock.Release()
 		p.holding.Store(false)
 		return err

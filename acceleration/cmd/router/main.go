@@ -867,8 +867,14 @@ func run(settings config.Config, logger *slog.Logger) error {
 	// shared database, so that one shard down leaves its own stats behind rather than failing
 	// everybody's.
 	if pgStore != nil && pgStore.StatsShipped() {
-		stopStats := startStatsShipper(ctx, pgStore, logger)
+		stopStats := startShipper(ctx, pgStore.StatsShipper(logger, 0))
 		defer stopStats()
+	}
+	// Where each session lives and the rows the session and call lists read are shipped to the
+	// shared database too, a few seconds behind, so no router reads another shard's.
+	if pgStore != nil && pgStore.Sharded() {
+		stopIndex := startShipper(ctx, pgStore.IndexShipper(logger, 0))
+		defer stopIndex()
 	}
 
 	// One router of the deployment checks every organization's spend for a jump each hour, posts
@@ -2138,6 +2144,7 @@ func openShards(settings config.Config) (*store.Store, error) {
 		return nil, errors.New("this needs a database: set postgres.dsn")
 	}
 	return store.OpenShards(store.Options{
+		Shard:           settings.Shard,
 		DSN:             settings.Postgres.DSN,
 		ShardDSN:        settings.Postgres.ShardDSN,
 		Shards:          settings.Postgres.Shards,

@@ -148,9 +148,9 @@ type AgentSession struct {
 	// OpenedAt is when the router running the session opened it, first or carried on since.
 	// Zero, stored as NULL, on a row from before it was kept.
 	OpenedAt time.Time `bun:"opened_at,nullzero"`
-	// SupersededAt is when the session was carried on in another shard: when the router that
-	// carried it on opened it. That shard's row says what it is from then on
-	// (Sessions.Supersede), and a list leaves this row out. Nil for a row nothing superseded.
+	// SupersededAt is when the session was carried on in another shard, as sessions were before
+	// each stayed in the shard it opened in, and a list leaves this row out. Nil for a row
+	// nothing superseded.
 	SupersededAt *time.Time `bun:"superseded_at"`
 	// ClosedAt is nil while the session is still running.
 	ClosedAt *time.Time `bun:"closed_at"`
@@ -339,7 +339,7 @@ func (r *Sessions) Upsert(ctx context.Context, session *AgentSession) error {
 			return stack.Wrap(fmt.Errorf("store: save session: %w", err))
 		}
 		if written == 1 {
-			return nil
+			return r.store.SessionHomes.record(ctx, []SessionHome{{CustomerID: session.CustomerID, SessionID: session.ID, OpenedAt: session.CreatedAt}})
 		}
 		result, err = r.store.shard.NewUpdate().With("saved", r.store.shard.NewValues(session)).
 			Model((*AgentSession)(nil)).TableExpr("saved").
@@ -383,7 +383,9 @@ func (r *Sessions) Upsert(ctx context.Context, session *AgentSession) error {
 			return stack.Wrap(fmt.Errorf("store: save session: %w", err))
 		}
 		if written == 1 {
-			return nil
+			// Again on an update, so a session whose first write failed to record its home
+			// records it on the retry.
+			return r.store.SessionHomes.record(ctx, []SessionHome{{CustomerID: session.CustomerID, SessionID: session.ID, OpenedAt: session.CreatedAt}})
 		}
 		// Nothing written: the row is another customer's, or this customer's own of a run
 		// opened since, which a late write leaves as it is.
@@ -399,88 +401,6 @@ func (r *Sessions) Upsert(ctx context.Context, session *AgentSession) error {
 		}
 	}
 	return stack.Wrap(fmt.Errorf("%w: session %s", ErrIDTaken, session.ID))
-}
-
-// Supersede makes the row Upsert just wrote in this shard, of a session carried on there that
-// this router opened at opened, the row the session is listed and found by. Its rows opened
-// before, in any shard, are marked superseded, and this one takes from the one opened last
-// what its own run has not seen: when it was pinned, its review score, when it last answered,
-// the modality it reached and whether it remembered. This shard's own row is not among them:
-// it opened at opened, not before.
-//
-// Only a row opened before is superseded, so a late write from a router that held the session
-// earlier never hides the row of the one holding it now. Such a write's own row is superseded
-// instead, by the run opened since.
-//
-// The rows are read, superseded already or not, before any is marked, and every write only
-// moves one way. A call that failed partway, which the recorder retries, ends as one that did
-// not.
-func (r *Sessions) Supersede(ctx context.Context, customerID, id string, opened time.Time) error {
-	if customerID == "" || id == "" || opened.IsZero() {
-		return stack.Wrap(errors.New("store: a customer, a session id and when it opened are required"))
-	}
-	// As Postgres keeps it, so this router's own row compares as opened at opened.
-	opened = opened.Truncate(time.Microsecond)
-	lists, err := everyShard(ctx, r.store, func(ctx context.Context, db bun.IDB) ([]AgentSession, error) {
-		var rows []AgentSession
-		err := db.NewSelect().Model(&rows).
-			Column("opened_at", "modality", "last_response_at", "pinned_at", "review_score", "remembers", "updated_at").
-			Where("id = ?", id).
-			Where("customer_id = ?", customerID).
-			Scan(ctx)
-		return rows, err
-	})
-	if err != nil {
-		return stack.Wrap(fmt.Errorf("store: supersede session: %w", err))
-	}
-	// The run opened last first. A row from before opened_at was kept reads as opened first.
-	rows := merged(lists, func(a, b AgentSession) int {
-		return cmp.Or(b.OpenedAt.Compare(a.OpenedAt), b.UpdatedAt.Compare(a.UpdatedAt))
-	}, 0)
-	if len(rows) > 0 && rows[0].OpenedAt.After(opened) {
-		since := rows[0].OpenedAt
-		_, err := r.store.shard.NewUpdate().Model((*AgentSession)(nil)).
-			Set("superseded_at = GREATEST(superseded_at, ?)", since).
-			Where("id = ?", id).
-			Where("customer_id = ?", customerID).
-			Where("opened_at IS NULL OR opened_at < ?", since).
-			Exec(ctx)
-		if err != nil {
-			return stack.Wrap(fmt.Errorf("store: supersede session: by a run opened since: %w", err))
-		}
-		return nil
-	}
-	earlier := slices.IndexFunc(rows, func(row AgentSession) bool { return row.OpenedAt.Before(opened) })
-	if earlier < 0 {
-		return nil
-	}
-	from := rows[earlier]
-	_, err = r.store.shard.NewUpdate().Model((*AgentSession)(nil)).
-		// Modality only moves up, and so does remembering: once true it stays true.
-		Set("modality = CASE WHEN ?0 IN (modality, ?2) THEN ?0 WHEN ?1 IN (modality, ?2) THEN ?1 ELSE modality END",
-			ModalityVideo, ModalityVoice, from.Modality).
-		Set("remembers = remembers OR ?", from.Remembers).
-		Set("last_response_at = GREATEST(last_response_at, ?)", from.LastResponseAt).
-		Set("pinned_at = COALESCE(pinned_at, ?)", from.PinnedAt).
-		Set("review_score = COALESCE(review_score, ?)", from.ReviewScore).
-		Where("id = ?", id).
-		Where("customer_id = ?", customerID).
-		Exec(ctx)
-	if err != nil {
-		return stack.Wrap(fmt.Errorf("store: supersede session: take its earlier row's: %w", err))
-	}
-	_, err = onEveryShard(ctx, r.store, func(ctx context.Context, db bun.IDB) (sql.Result, error) {
-		return db.NewUpdate().Model((*AgentSession)(nil)).
-			Set("superseded_at = GREATEST(superseded_at, ?)", opened).
-			Where("id = ?", id).
-			Where("customer_id = ?", customerID).
-			Where("opened_at IS NULL OR opened_at < ?", opened).
-			Exec(ctx)
-	})
-	if err != nil {
-		return stack.Wrap(fmt.Errorf("store: supersede session: mark its earlier rows: %w", err))
-	}
-	return nil
 }
 
 // SetToolTimeout records the tool_timeout_ms a running session was given since it opened, by
@@ -581,18 +501,20 @@ func (r *Sessions) Describe(ctx context.Context, customerID, id, title, descript
 		return stack.Wrap(errors.New("store: a customer and a session id are required"))
 	}
 
-	affected, err := onEveryShard(ctx, r.store, func(ctx context.Context, db bun.IDB) (sql.Result, error) {
-		query := db.NewUpdate().Model((*AgentSession)(nil)).
-			Set("updated_at = ?", time.Now().UTC()).
-			Set("title = ?", title).
-			Set("description = ?", description).
-			Where("id = ?", id).
-			Where("customer_id = ?", customerID)
-		if custom != nil {
-			query = query.Set("custom = ?", jsonbOf(custom))
-		}
-		return query.Exec(ctx)
-	})
+	query := r.store.shard.NewUpdate().Model((*AgentSession)(nil)).
+		Set("updated_at = ?", time.Now().UTC()).
+		Set("title = ?", title).
+		Set("description = ?", description).
+		Where("id = ?", id).
+		Where("customer_id = ?", customerID)
+	if custom != nil {
+		query = query.Set("custom = ?", jsonbOf(custom))
+	}
+	result, err := query.Exec(ctx)
+	if err != nil {
+		return stack.Wrap(fmt.Errorf("store: describe session: %w", err))
+	}
+	affected, err := result.RowsAffected()
 	if err != nil {
 		return stack.Wrap(fmt.Errorf("store: describe session: %w", err))
 	}
@@ -610,120 +532,62 @@ func (r *Sessions) ChooseConnection(ctx context.Context, customerID, id, name, c
 	if customerID == "" || id == "" || name == "" || connectionID == "" {
 		return stack.Wrap(errors.New("store: a customer, a session, a binding name and a connection id are required"))
 	}
-	_, err := onEveryShard(ctx, r.store, func(ctx context.Context, db bun.IDB) (sql.Result, error) {
-		return db.NewUpdate().Model((*AgentSession)(nil)).
-			Set("updated_at = ?", time.Now().UTC()).
-			Set(`connector_selections = (
+	_, err := r.store.shard.NewUpdate().Model((*AgentSession)(nil)).
+		Set("updated_at = ?", time.Now().UTC()).
+		Set(`connector_selections = (
 			SELECT coalesce(jsonb_agg(chosen), '[]'::jsonb) FROM jsonb_array_elements(connector_selections) AS chosen
 			WHERE chosen->>'name' <> ?) || jsonb_build_array(jsonb_build_object('name', ?::text, 'connection_id', ?::text))`,
-				name, name, connectionID).
-			Where("id = ?", id).
-			Where("customer_id = ?", customerID).
-			Exec(ctx)
-	})
+			name, name, connectionID).
+		Where("id = ?", id).
+		Where("customer_id = ?", customerID).
+		Exec(ctx)
 	if err != nil {
 		return stack.Wrap(fmt.Errorf("store: choose session connection: %w", err))
 	}
 	return nil
 }
 
-// Exists reports whether any customer has a session with this id.
+// Exists reports whether any customer has a session with this id, in this shard or, by its
+// home, in another.
 func (r *Sessions) Exists(ctx context.Context, id string) (bool, error) {
-	_, err := whicheverShard(ctx, r.store, func(ctx context.Context, db bun.IDB) (bool, error) {
-		exists, err := db.NewSelect().Model((*AgentSession)(nil)).Where("id = ?", id).Exists(ctx)
-		if err == nil && !exists {
-			err = sql.ErrNoRows
-		}
-		return exists, err
-	})
-	exists := err == nil
-	if errors.Is(err, sql.ErrNoRows) {
-		err = nil
-	}
+	exists, err := r.store.shard.NewSelect().Model((*AgentSession)(nil)).Where("id = ?", id).Exists(ctx)
 	if err != nil {
 		return false, stack.Wrap(fmt.Errorf("store: session exists: %w", err))
 	}
-	return exists, nil
+	if exists {
+		return true, nil
+	}
+	return r.store.SessionHomes.taken(ctx, id)
 }
 
-// Get returns one session a customer ran. A session carried on in another shard has a row in
-// each, and the one not superseded says what it is now. The row in this shard answers unless it
-// is superseded or missing; only then are the other shards read, so a shard that is down fails
-// no read of a session it does not hold. While the shard a session was carried on in is down,
-// its superseded row here answers, as it was when the session left.
+// Get returns one session a customer ran in this shard. A session that lives in another shard
+// is read there (SessionHomes).
 func (r *Sessions) Get(ctx context.Context, customerID, id string) (AgentSession, error) {
 	if customerID == "" || id == "" {
 		return AgentSession{}, stack.Wrap(errors.New("store: a customer and a session id are required"))
 	}
 
-	sessions, err := whicheverShard(ctx, r.store, func(ctx context.Context, db bun.IDB) ([]AgentSession, error) {
-		var sessions []AgentSession
-		err := db.NewSelect().Model(&sessions).
-			Where("id = ?", id).
-			Where("customer_id = ?", customerID).
-			Scan(ctx)
-		// Read past a superseded row, to the shard the session was carried on in.
-		if err == nil && (len(sessions) == 0 || sessions[0].SupersededAt != nil) {
-			err = sql.ErrNoRows
-		}
-		return sessions, err
-	})
-	if len(sessions) > 0 {
-		return sessions[0], nil
-	}
+	var session AgentSession
+	err := r.store.shard.NewSelect().Model(&session).
+		Where("id = ?", id).
+		Where("customer_id = ?", customerID).
+		Scan(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
 		return AgentSession{}, unknownStoredSession(id)
 	}
-	return AgentSession{}, stack.Wrap(fmt.Errorf("store: stored session: %w", err))
+	if err != nil {
+		return AgentSession{}, stack.Wrap(fmt.Errorf("store: stored session: %w", err))
+	}
+	return session, nil
 }
 
-// ReadProjectTag gives a row that does not say its project tag the one it has: what another run's
-// row says, or, when no row does, what TaggedProject derives from the row of the run that opened
-// it. A router of the release before writes such a row as it carries the session on in another
-// shard, with the kind of caller that carried it on, so every shard is asked, this one again and
-// each other for peerReadTimeout at most. A shard that does not answer may be the one that says it, so with no
-// row found it is an error: usage is not tagged with a guess.
-func (r *Sessions) ReadProjectTag(ctx context.Context, session *AgentSession) error {
+// ReadProjectTag gives a row that does not say its project tag the one it has. Since a session
+// stays in its home shard, the row in hand already says who opened it.
+func (r *Sessions) ReadProjectTag(_ context.Context, session *AgentSession) error {
 	if session.ProjectTag != nil {
 		return nil
 	}
-	opener := *session
-	// A session that never had a project, which only a fork may have a tag without, has none.
-	if len(r.store.peers) > 0 && (session.Project != "" || session.ForkedFrom != "") {
-		lists, failed := answeringShards(ctx, r.store, "project tag", peerReadTimeout,
-			func(rows []AgentSession) bool { return len(rows) > 0 && rows[0].ProjectTag != nil },
-			func(ctx context.Context, db bun.IDB) ([]AgentSession, error) {
-				var rows []AgentSession
-				err := db.NewSelect().Model(&rows).
-					Column("project_tag", "project", "caller_kind", "forked_from").
-					// When the session was first run in the shard: opened_at moves as it is carried
-					// on there again, its first response's time does not. NULL is from before
-					// opened_at was kept, and reads as first.
-					ColumnExpr("LEAST(opened_at, (SELECT min(created_at) FROM agent_responses WHERE session_id = ?TableAlias.id AND customer_id = ?)) AS opened_at", session.CustomerID).
-					Where("id = ?", session.ID).
-					Where("customer_id = ?", session.CustomerID).
-					Scan(ctx, &rows)
-				return rows, err
-			})
-		rows := merged(lists, func(a, b AgentSession) int { return a.OpenedAt.Compare(b.OpenedAt) }, 0)
-		if said := slices.IndexFunc(rows, func(row AgentSession) bool { return row.ProjectTag != nil }); said >= 0 {
-			session.ProjectTag = rows[said].ProjectTag
-			return nil
-		}
-		if err := errors.Join(failed...); err != nil {
-			return stack.Wrap(fmt.Errorf("%w: %w", ErrProjectTagUnread, err))
-		}
-		if len(rows) > 0 {
-			opener = rows[0]
-		}
-		// Rows first run at one moment do not say which opened it: one tag they agree on, or none.
-		for _, row := range rows {
-			if row.OpenedAt.Equal(opener.OpenedAt) && row.TaggedProject() != opener.TaggedProject() {
-				opener.ProjectTag = new("")
-			}
-		}
-	}
-	session.ProjectTag = new(opener.TaggedProject())
+	session.ProjectTag = new(session.TaggedProject())
 	return nil
 }
 
@@ -734,20 +598,16 @@ func (r *Sessions) ConversationPin(ctx context.Context, customerID, conversation
 		Pin       sql.NullInt64 `bun:"stream_app_pk"`
 		CreatedAt time.Time     `bun:"created_at"`
 	}
-	lists, err := everyShard(ctx, r.store, func(ctx context.Context, db bun.IDB) ([]pinned, error) {
-		var newest []pinned
-		err := db.NewSelect().Model((*AgentSession)(nil)).Column("stream_app_pk", "created_at").
-			Where("customer_id = ?", customerID).
-			Where("conversation_id = ?", conversationID).
-			OrderExpr("created_at DESC").
-			Limit(1).
-			Scan(ctx, &newest)
-		return newest, err
-	})
+	var newest []pinned
+	err := r.store.shard.NewSelect().Model((*AgentSession)(nil)).Column("stream_app_pk", "created_at").
+		Where("customer_id = ?", customerID).
+		Where("conversation_id = ?", conversationID).
+		OrderExpr("created_at DESC").
+		Limit(1).
+		Scan(ctx, &newest)
 	if err != nil {
 		return 0, false, stack.Wrap(fmt.Errorf("store: conversation pin: %w", err))
 	}
-	newest := merged(lists, func(a, b pinned) int { return b.CreatedAt.Compare(a.CreatedAt) }, 1)
 	if len(newest) == 0 {
 		return 0, false, nil
 	}
@@ -835,29 +695,25 @@ func (r *Sessions) Delete(ctx context.Context, customerID, id string) error {
 
 	// The documents first: they hold the person's files, and have no foreign key to go with
 	// the session by.
-	_, err := onEveryShard(ctx, r.store, func(ctx context.Context, db bun.IDB) (sql.Result, error) {
-		return db.NewDelete().Model((*ConversationDocument)(nil)).
-			Where("session_id = ?", id).
-			Where("customer_id = ?", customerID).
-			Exec(ctx)
-	})
+	_, err := r.store.shard.NewDelete().Model((*ConversationDocument)(nil)).
+		Where("session_id = ?", id).
+		Where("customer_id = ?", customerID).
+		Exec(ctx)
 	if err != nil {
 		return stack.Wrap(fmt.Errorf("store: delete session documents: %w", err))
 	}
-	_, err = onEveryShard(ctx, r.store, func(ctx context.Context, db bun.IDB) (sql.Result, error) {
-		// The copies of hidden messages go with the session, and the changes recorded of them,
-		// which hold the same words, are emptied (forgottenChanges). A data-modifying WITH runs
-		// whether or not it is read.
-		changes := forgottenChanges(db, customerID, "agent_branch_messages").Where("payload->>'session_id' = ?", id)
-		return db.NewDelete().With("changes", changes).Model((*AgentSession)(nil)).
-			Where("id = ?", id).
-			Where("customer_id = ?", customerID).
-			Exec(ctx)
-	})
+	// The copies of hidden messages go with the session, and the changes recorded of them,
+	// which hold the same words, are emptied (forgottenChanges). A data-modifying WITH runs
+	// whether or not it is read.
+	changes := forgottenChanges(r.store.shard, customerID, "agent_branch_messages").Where("payload->>'session_id' = ?", id)
+	_, err = r.store.shard.NewDelete().With("changes", changes).Model((*AgentSession)(nil)).
+		Where("id = ?", id).
+		Where("customer_id = ?", customerID).
+		Exec(ctx)
 	if err != nil {
 		return stack.Wrap(fmt.Errorf("store: delete session: %w", err))
 	}
-	return nil
+	return r.store.SessionHomes.forget(ctx, customerID, id)
 }
 
 // Select returns a customer's sessions in the filter's order, the most recent message first
@@ -1030,37 +886,23 @@ func (r *Sessions) Pin(ctx context.Context, customerID, id string, pinned bool, 
 	type pin struct {
 		PinnedAt *time.Time `bun:"pinned_at"`
 	}
-	lists, err := everyShard(ctx, r.store, func(ctx context.Context, db bun.IDB) ([]pin, error) {
-		query := db.NewUpdate().Model((*AgentSession)(nil)).
-			Where("id = ?", id).
-			Where("customer_id = ?", customerID).
-			Returning("pinned_at")
-		if pinned {
-			query = query.Set("pinned_at = COALESCE(pinned_at, ?)", at)
-		} else {
-			query = query.Set("pinned_at = NULL")
-		}
-		var pins []pin
-		_, err := query.Exec(ctx, &pins)
-		return pins, err
-	})
-	if err != nil {
+	query := r.store.shard.NewUpdate().Model((*AgentSession)(nil)).
+		Where("id = ?", id).
+		Where("customer_id = ?", customerID).
+		Returning("pinned_at")
+	if pinned {
+		query = query.Set("pinned_at = COALESCE(pinned_at, ?)", at)
+	} else {
+		query = query.Set("pinned_at = NULL")
+	}
+	var pins []pin
+	if _, err := query.Exec(ctx, &pins); err != nil {
 		return nil, stack.Wrap(fmt.Errorf("store: pin session: %w", err))
 	}
-	var first *time.Time
-	rows := 0
-	for _, pins := range lists {
-		for _, one := range pins {
-			rows++
-			if one.PinnedAt != nil && (first == nil || one.PinnedAt.Before(*first)) {
-				first = one.PinnedAt
-			}
-		}
-	}
-	if rows == 0 {
+	if len(pins) == 0 {
 		return nil, unknownStoredSession(id)
 	}
-	return first, nil
+	return pins[0].PinnedAt, nil
 }
 
 // SessionEnding is how many of some apps' sessions are still running, or ended for one

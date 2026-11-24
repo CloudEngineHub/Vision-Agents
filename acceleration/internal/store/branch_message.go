@@ -1,13 +1,11 @@
 package store
 
 import (
-	"cmp"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/uptrace/bun"
@@ -96,26 +94,18 @@ func (r *BranchMessages) Select(ctx context.Context, customerID, sessionID strin
 	if customerID == "" || sessionID == "" {
 		return nil, stack.Wrap(errors.New("store: a customer and a session id are required"))
 	}
-	lists, err := everyShard(ctx, r.store, func(ctx context.Context, db bun.IDB) ([]AgentBranchMessage, error) {
-		query := db.NewSelect().Model((*AgentBranchMessage)(nil)).
-			Where("customer_id = ?", customerID).
-			Where("session_id = ?", sessionID).
-			Order("chat_created_at ASC", "original_message_id ASC")
-		if len(responseIDs) > 0 {
-			query = query.Where("response_id IN (?)", bun.In(responseIDs))
-		}
-		var messages []AgentBranchMessage
-		err := query.Scan(ctx, &messages)
-		return messages, err
-	})
-	if err != nil {
+	query := r.store.shard.NewSelect().Model((*AgentBranchMessage)(nil)).
+		Where("customer_id = ?", customerID).
+		Where("session_id = ?", sessionID).
+		Order("chat_created_at ASC", "original_message_id ASC")
+	if len(responseIDs) > 0 {
+		query = query.Where("response_id IN (?)", bun.In(responseIDs))
+	}
+	var messages []AgentBranchMessage
+	if err := query.Scan(ctx, &messages); err != nil {
 		return nil, stack.Wrap(fmt.Errorf("store: branch messages: %w", err))
 	}
-	// A switch finished by a router of another shard copies the messages again into its own.
-	all := merged(lists, func(a, b AgentBranchMessage) int {
-		return cmp.Or(a.ChatCreatedAt.Compare(b.ChatCreatedAt), strings.Compare(a.OriginalMessageID, b.OriginalMessageID))
-	}, 0)
-	return distinct(all, func(m AgentBranchMessage) string { return m.OriginalMessageID }), nil
+	return messages, nil
 }
 
 // DeleteUser deletes every copy of a hidden message in the sessions of an app's end user, on

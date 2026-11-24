@@ -26,10 +26,10 @@ import (
 const seedRows = 100_000
 
 // hotTables are the tables that grow with traffic, which no statement may read in full.
-var hotTables = regexp.MustCompile(`\b(requests|agent_sessions|calls|call_legs|agent_logs|image_jobs)\b`)
+var hotTables = regexp.MustCompile(`\b(requests|agent_sessions|calls|call_legs|agent_logs|image_jobs|session_homes)\b`)
 
 // seqScans finds a sequential scan of one of hotTables in a plan.
-var seqScans = regexp.MustCompile(`Seq Scan on (requests|agent_sessions|calls|call_legs|agent_logs|image_jobs)\b`)
+var seqScans = regexp.MustCompile(`Seq Scan on (requests|agent_sessions|calls|call_legs|agent_logs|image_jobs|session_homes)\b`)
 
 // seededDatabase fills a database of its own with seedRows of each hot table, once per run of the
 // suite: the suite's databases are emptied before every test, and seeding them for each would
@@ -64,7 +64,7 @@ func (s *StoreSuite) seededDatabase() string {
 		// Statistics read off every row rather than a sample, so the planner breaks a tie
 		// between two indexes the same way every run.
 		_, err := tx.ExecContext(ctx, "SET LOCAL default_statistics_target = 1000; "+
-			"ANALYZE agent_sessions, calls, call_legs, requests, agent_logs, image_jobs")
+			"ANALYZE agent_sessions, calls, call_legs, requests, agent_logs, image_jobs, session_homes")
 		return err
 	}))
 	s.seededDSN = dsn
@@ -84,6 +84,10 @@ var seedStatements = []string{
 		CASE WHEN n % 100 <> 0 THEN at + interval '10 minutes' END, at + interval '9 minutes',
 		CASE WHEN n % 500 = 0 THEN at END, CASE WHEN n % 20 = 0 THEN n % 5 + 1 END,
 		CASE WHEN n % 7 <> 0 THEN 1 + n % 3 END
+	FROM generate_series(1, ?1) AS n, LATERAL (SELECT ?0::timestamptz - (?1 - n) * interval '77 seconds' AS at) AS t`,
+
+	`INSERT INTO session_homes (customer_id, session_id, shard, opened_at)
+	SELECT 'customer-' || (n % 200), 'seeded-session-' || n, 'shard-' || (n % 4), at
 	FROM generate_series(1, ?1) AS n, LATERAL (SELECT ?0::timestamptz - (?1 - n) * interval '77 seconds' AS at) AS t`,
 
 	`INSERT INTO calls (id, session_id, customer_id, stream_app_pk, call_type, call_id, agent_id, conversation_id,
@@ -472,9 +476,6 @@ func (s *StoreSuite) TestEveryHotTableIsReadByIndex() {
 			return store.Sessions.Upsert(ctx, &AgentSession{ID: "seeded-session-7", CustomerID: "customer-7", AgentName: "agent 7",
 				UserID: "user-7", CallerKind: "user", CreatedAt: s.base})
 		}},
-		{name: "Sessions.Supersede", index: "agent_sessions_pkey", run: func(ctx context.Context, store *Store) error {
-			return store.Sessions.Supersede(ctx, "customer-8", "seeded-session-8", s.base)
-		}},
 		{name: "Sessions.SetToolTimeout", index: "agent_sessions_pkey", run: func(ctx context.Context, store *Store) error {
 			return store.Sessions.SetToolTimeout(ctx, "customer-7", "seeded-session-7", "search", 1000)
 		}},
@@ -492,6 +493,14 @@ func (s *StoreSuite) TestEveryHotTableIsReadByIndex() {
 		}},
 		{name: "Sessions.ChooseConnection", index: "agent_sessions_pkey", run: func(ctx context.Context, store *Store) error {
 			return store.Sessions.ChooseConnection(ctx, "customer-7", "seeded-session-7", "github", "connection")
+		}},
+		{name: "SessionHomes.Of", index: "session_homes_pkey", sharded: true, run: func(ctx context.Context, store *Store) error {
+			_, err := store.SessionHomes.Of(ctx, "customer-7", "seeded-session-7")
+			return err
+		}},
+		{name: "Sessions.Exists of another shard's", index: "session_homes_pkey", sharded: true, run: func(ctx context.Context, store *Store) error {
+			_, err := store.Sessions.Exists(ctx, "unseeded-session")
+			return err
 		}},
 		{name: "Sessions.Exists", index: "agent_sessions_pkey", run: func(ctx context.Context, store *Store) error {
 			_, err := store.Sessions.Exists(ctx, "seeded-session-7")

@@ -1192,6 +1192,20 @@ TABLE scheduled_tasks
     CREATE INDEX scheduled_tasks_user_idx ON public.scheduled_tasks USING btree (customer_id, user_id, created_at DESC, id DESC)
     CREATE INDEX scheduled_tasks_wake_idx ON public.scheduled_tasks USING btree (GREATEST(next_run_at, lease_until)) WHERE ((state = 'active'::text) AND (next_run_at IS NOT NULL))
 
+TABLE session_homes
+    customer_id text NOT NULL
+    opened_at timestamp with time zone NOT NULL DEFAULT now()
+    session_id text NOT NULL
+    shard text NOT NULL
+    CONSTRAINT session_homes_pkey PRIMARY KEY (session_id, customer_id)
+
+TABLE shard_index_shipped
+    kind text NOT NULL
+    shard text NOT NULL
+    shipped_at timestamp with time zone NOT NULL DEFAULT now()
+    shipped_through timestamp with time zone NOT NULL
+    CONSTRAINT shard_index_shipped_pkey PRIMARY KEY (shard, kind)
+
 TABLE shard_numbers
     name text NOT NULL
     number integer NOT NULL

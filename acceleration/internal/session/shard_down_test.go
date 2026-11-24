@@ -76,12 +76,11 @@ func (s *ShardDownSuite) TestASessionWithAnIdTheRouterGeneratesOpens() {
 	s.Require().NoError(created.Close())
 }
 
-// The id a caller chose may be another session's on the shard that is down, so it is not
-// taken on trust.
-func (s *ShardDownSuite) TestASessionWithAnIdTheCallerChoseIsNotOpened() {
-	_, err := s.manager.Create(s.ctx, Spec{ID: uuid.NewString(), Text: true, CustomerID: "shard-down-" + uuid.NewString(), LLMTarget: "en-low-latency"})
-	s.Require().Error(err)
-	s.NotErrorIs(err, ErrSessionExists)
+// Whose an id is, is read here and in the global database: a shard that is down is never asked.
+func (s *ShardDownSuite) TestASessionWithAnIdTheCallerChoseOpens() {
+	created, err := s.manager.Create(s.ctx, Spec{ID: uuid.NewString(), Text: true, CustomerID: "shard-down-" + uuid.NewString(), LLMTarget: "en-low-latency"})
+	s.Require().NoError(err)
+	s.Require().NoError(created.Close())
 }
 
 // A voice session given no call holds its own, named after the id generated for it, which no

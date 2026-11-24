@@ -209,10 +209,12 @@ const suiteManageKey = "suite-manage-key"
 type RouterSuite struct {
 	suite.Suite
 
-	store   *store.Store
-	configs *store.Store
-	live    *live.Client
-	sealer  *auth.Sealer
+	store *store.Store
+	// otherStore is the store of otherNode, on the same databases, named for its shard.
+	otherStore *store.Store
+	configs    *store.Store
+	live       *live.Client
+	sealer     *auth.Sealer
 	// storeOptions are what the suite's store was opened with, for a node on the same databases.
 	storeOptions store.Options
 	// activity is the activity record every node of the suite counts in.
@@ -612,6 +614,7 @@ func (s *RouterSuite) SetupSuite() {
 	if shardDSN := os.Getenv("ROUTER_POSTGRES_SHARD_DSN"); shardDSN != "" {
 		options.ShardDSN = testDatabase(s.T(), shardDSN)
 	}
+	options.Shard = s.shard
 	s.storeOptions = options
 	pgStore, err := store.OpenShards(options)
 	s.Require().NoError(err)
@@ -624,6 +627,14 @@ func (s *RouterSuite) SetupSuite() {
 		pgStore.ShardDB().AddQueryHook(s.failing)
 	}
 	s.T().Cleanup(func() { s.Require().NoError(pgStore.Close()) })
+	s.otherStore = pgStore
+	if s.otherShard != s.shard {
+		otherOptions := options
+		otherOptions.Shard = s.otherShard
+		s.otherStore, err = store.OpenShards(otherOptions)
+		s.Require().NoError(err)
+		s.T().Cleanup(func() { s.Require().NoError(s.otherStore.Close()) })
+	}
 	// Registered before everything that records, so it runs once all of it has closed and
 	// written what it held.
 	s.T().Cleanup(s.assertEveryRowNamesAKey)
@@ -1929,11 +1940,11 @@ func (s *RouterSuite) otherNodeHolding(workers *dispatch.Pool, keyring *auth.Sea
 		Memory:        metered.NewMemory(&keptMemories{}, s.metering),
 		Conversations: s.conversations,
 		Stream:        s.stream,
-		Store:         s.store,
+		Store:         s.otherStore,
 		Live:          s.live,
 		Directory:     directory,
 		Logger:        logger,
-		Writer:        s.routerWriter(s.store, s.live, nil, logger),
+		Writer:        s.routerWriter(s.otherStore, s.live, nil, logger),
 		Edge: func(context.Context, session.Spec, streamapp.Bound, *slog.Logger) (agent.Edge, error) {
 			return &silentEdge{inbound: make(chan agent.InboundAudio, 4)}, nil
 		},
@@ -1953,7 +1964,7 @@ func (s *RouterSuite) otherNodeHolding(workers *dispatch.Pool, keyring *auth.Sea
 		ShardRouting:      s.shardRouting,
 		Dispatch:          workers,
 		Workers:           everyWorker,
-		Store:             s.store,
+		Store:             s.otherStore,
 		Activity:          s.activity,
 		Live:              s.live,
 		Auth:              s.authenticator(),

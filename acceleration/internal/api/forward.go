@@ -40,7 +40,16 @@ const unreachableNode = "the node running this session could not be reached"
 // a quota.
 func (s *Server) onOwningNode(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		address, elsewhere := s.owningNode(r)
+		address, elsewhere, failure := s.owningNode(r)
+		if failure != nil {
+			var refused APIError
+			if !errors.As(failure, &refused) {
+				s.logger.Error("could not find out which shard a session lives in", "error", failure)
+				refused = internalError()
+			}
+			writeError(w, refused)
+			return
+		}
 		if !elsewhere {
 			next.ServeHTTP(w, r)
 			return
@@ -61,24 +70,25 @@ func (s *Server) onOwningNode(next http.Handler) http.Handler {
 }
 
 // owningNode is where to send a request this node cannot answer, and false when this node
-// is the one to answer it.
-func (s *Server) owningNode(r *http.Request) (string, bool) {
+// is the one to answer it. It fails when the session lives in a shard no node of which answers:
+// its rows are there and nowhere else.
+func (s *Server) owningNode(r *http.Request) (string, bool, error) {
 	if s.directory == nil || s.forwarder == nil {
-		return "", false
+		return "", false, nil
 	}
 	// A request a peer handed over is answered here. Two nodes each believing the other
 	// holds the session would otherwise pass it back and forth.
 	if r.Header.Get(node.ForwardedHeader) != "" {
-		return "", false
+		return "", false, nil
 	}
-	address, ok := s.nodeFor(r)
-	if !ok {
-		return "", false
+	address, ok, failure := s.nodeFor(r)
+	if !ok || failure != nil {
+		return "", false, failure
 	}
-	// Nothing says it is running: the session ended, or never existed, and what reads the
-	// row is as able to answer here as anywhere.
+	// Nothing says it is running and it lives in this shard: the session ended, or never
+	// existed, and what reads the row is as able to answer here as anywhere in the shard.
 	if address == "" || address == s.directory.Address() {
-		return "", false
+		return "", false, nil
 	}
 	// A socket cannot be carried over a call that answers once, and within a shard does not
 	// need to be: the relay reaches a session's events wherever the socket lands. The relay
@@ -87,51 +97,80 @@ func (s *Server) owningNode(r *http.Request) (string, bool) {
 		other, err := s.directory.InAnotherShard(r.Context(), address)
 		if err != nil {
 			s.logger.Warn("could not find out which shard a node is in", "node", address, "error", err)
-			return "", false
+			return "", false, nil
 		}
-		return address, other
+		return address, other, nil
 	}
-	return address, true
+	return address, true, nil
 }
 
-// nodeFor is the node the directory says runs the session a request is about, false when
-// the request is about none, names no customer, or this node runs it. A request that names no
-// customer is answered here, where it is refused.
-func (s *Server) nodeFor(r *http.Request) (string, bool) {
+// nodeFor is the node the directory says runs the session a request is about, or a node of
+// the shard it lives in when nothing runs it, false when the request is about none, names no
+// customer, or this node runs it. A request that names no customer is answered here, where it
+// is refused.
+func (s *Server) nodeFor(r *http.Request) (string, bool, error) {
 	customer, ok := CustomerFrom(r.Context())
 	if !ok {
-		return "", false
+		return "", false, nil
 	}
 	if cid, ok := approvalInPath(r.URL.Path); ok {
 		if s.sessions != nil {
 			// Another customer's session in a conversation of the same cid is no reason to answer here.
 			if _, running := s.sessions.ByConversationWhere(cid, func(owner string, _ int64) bool { return owner == customer }); running {
-				return "", false
+				return "", false, nil
 			}
 		}
 		address, err := s.directory.NodeByConversation(r.Context(), customer, cid)
 		if err != nil {
 			s.logger.Warn("could not find out which node is answering in a conversation",
 				"customer", customer, "conversation", cid, "error", err)
-			return "", false
+			return "", false, nil
 		}
-		return address, true
+		return address, true, nil
 	}
 	id, ok := sessionInPath(r.URL.Path)
 	if !ok {
-		return "", false
+		return "", false, nil
 	}
 	if s.sessions != nil && s.sessions.Running(customer, id) {
-		return "", false
+		return "", false, nil
 	}
 
 	address, err := s.directory.Node(r.Context(), customer, id)
 	if err != nil {
 		s.logger.Warn("could not find out which node is running a session",
 			"customer", customer, "session", id, "error", err)
-		return "", false
+		return "", false, nil
 	}
-	return address, true
+	if address == "" {
+		return s.homeNode(r.Context(), customer, id)
+	}
+	return address, true, nil
+}
+
+// errHomeShardDown is a session whose shard has no node answering. Its rows are there alone,
+// so no other shard can read it, carry it on or answer in it.
+var errHomeShardDown = APIError{Type: ErrorTypeUnavailable, Code: codeShardUnavailable,
+	Message: "the region this session lives in could not be reached"}
+
+// homeNode is a node of the shard a session nothing runs lives in, when that is another shard:
+// it is read and carried on there, where its rows are.
+func (s *Server) homeNode(ctx context.Context, customer, id string) (string, bool, error) {
+	if s.store == nil {
+		return "", false, nil
+	}
+	home, err := s.store.SessionHomes.Elsewhere(ctx, customer, id)
+	if err != nil || home == "" {
+		return "", false, err
+	}
+	address, err := s.directory.NodeInShard(ctx, home)
+	if err != nil {
+		return "", false, err
+	}
+	if address == "" {
+		return "", false, errHomeShardDown
+	}
+	return address, true, nil
 }
 
 // proxySocket carries a socket to the node running its session, upgrade and all, for as long

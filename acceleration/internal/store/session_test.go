@@ -1299,6 +1299,15 @@ type queryBudget struct {
 	run             func() error
 }
 
+// homeWrites is the statements writing a session's home sends: one to the shared database in a
+// deployment with shards.
+func (s *StoreSuite) homeWrites() int {
+	if s.store.homed {
+		return 1
+	}
+	return 0
+}
+
 // withinQueryBudgets runs each call in turn, checking it succeeds in the statements it is allowed.
 func (s *StoreSuite) withinQueryBudgets(budgets []queryBudget) {
 	for _, one := range budgets {
@@ -1323,28 +1332,27 @@ func (s *StoreSuite) TestSessionQueryBudgets() {
 		return err
 	}
 	s.withinQueryBudgets([]queryBudget{
-		{"Upsert", 1, 0, func() error { return s.store.Sessions.Upsert(s.ctx, row) }},
+		{"Upsert", 1 + s.homeWrites(), 0, func() error { return s.store.Sessions.Upsert(s.ctx, row) }},
 		// The insert finds the row, which the update writes.
-		{"Upsert again", 2, 0, func() error { return s.store.Sessions.Upsert(s.ctx, row) }},
+		{"Upsert again", 2 + s.homeWrites(), 0, func() error { return s.store.Sessions.Upsert(s.ctx, row) }},
 		// The update writes nothing, so the row is read to find it is the customer's own.
 		{"Upsert of a run opened before", 3, 0, func() error { return s.store.Sessions.Upsert(s.ctx, &late) }},
-		{"Supersede", 0, 1, func() error { return s.store.Sessions.Supersede(s.ctx, "app", row.ID, row.OpenedAt) }},
 		{"SetToolTimeout", 1, 0, func() error { return s.store.Sessions.SetToolTimeout(s.ctx, row.CustomerID, row.ID, "http", 900) }},
 		{"SawVideo", 1, 0, func() error { return s.store.Sessions.SawVideo(s.ctx, row.CustomerID, row.ID) }},
 		{"Voiced", 1, 0, func() error { return s.store.Sessions.Voiced(s.ctx, row.CustomerID, row.ID) }},
-		{"Describe", 0, 1, func() error { return s.store.Sessions.Describe(s.ctx, "app", row.ID, "Title", "About", nil) }},
-		{"ChooseConnection", 0, 1, func() error {
+		{"Describe", 1, 0, func() error { return s.store.Sessions.Describe(s.ctx, "app", row.ID, "Title", "About", nil) }},
+		{"ChooseConnection", 1, 0, func() error {
 			return s.store.Sessions.ChooseConnection(s.ctx, "app", row.ID, "crm", "connection")
 		}},
 		{"Exists", 1, 0, func() error { _, err := s.store.Sessions.Exists(s.ctx, row.ID); return err }},
 		{"Get", 1, 0, func() error { _, err := s.store.Sessions.Get(s.ctx, "app", row.ID); return err }},
-		{"ConversationPin", 0, 1, func() error {
+		{"ConversationPin", 1, 0, func() error {
 			_, _, err := s.store.Sessions.ConversationPin(s.ctx, "app", "conversation")
 			return err
 		}},
 		{"Select", 0, 1, func() error { return pages(s.store.Sessions.Select(s.ctx, "app", SessionFilter{Limit: 10})) }},
 		{"Search", 0, 1, func() error { return pages(s.store.Sessions.Search(s.ctx, "app", "docs", SessionFilter{Limit: 10})) }},
-		{"Pin", 0, 1, func() error { _, err := s.store.Sessions.Pin(s.ctx, "app", row.ID, true, at); return err }},
+		{"Pin", 1, 0, func() error { _, err := s.store.Sessions.Pin(s.ctx, "app", row.ID, true, at); return err }},
 		{"Endings", 0, 1, func() error { _, err := s.store.Sessions.Endings(s.ctx, []string{"app"}, at); return err }},
 		{"Latest", 0, 1, func() error {
 			latest, err := s.store.Sessions.Latest(s.ctx, []string{"app"}, at, 10)
@@ -1360,7 +1368,7 @@ func (s *StoreSuite) TestSessionQueryBudgets() {
 		}},
 		{"SessionTools.Upsert", 1, 0, func() error { return s.store.SessionTools.Upsert(s.ctx, row.CustomerID, row.ID, tools) }},
 		{"SessionTools.Get", 1, 0, func() error { _, err := s.store.SessionTools.Get(s.ctx, row.CustomerID, row.ID); return err }},
-		{"Delete", 0, 2, func() error { return s.store.Sessions.Delete(s.ctx, "app", row.ID) }},
+		{"Delete", 2 + s.homeWrites(), 0, func() error { return s.store.Sessions.Delete(s.ctx, "app", row.ID) }},
 	})
 
 	// Run twice: only a read by the id alone would tell another customer's row from the

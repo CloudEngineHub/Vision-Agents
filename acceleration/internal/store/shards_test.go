@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func (s *ShardedStoreSuite) TestACallAnotherShardRanIsListedAndFound() {
+func (s *ShardedStoreSuite) TestACallAnotherShardRanIsListedButFoundThereAlone() {
 	s.Require().NoError(s.store.Calls.Start(s.ctx, &Call{ID: "here", CustomerID: "app", StartedAt: s.base}))
 	s.Require().NoError(s.other.Calls.Start(s.ctx, &Call{ID: "there", CustomerID: "app", StartedAt: s.base.Add(time.Minute)}))
 
@@ -18,7 +18,9 @@ func (s *ShardedStoreSuite) TestACallAnotherShardRanIsListedAndFound() {
 	s.Equal("there", calls[0].ID, "newest first, whichever shard ran it")
 	s.Equal("here", calls[1].ID)
 
-	found, err := s.store.Calls.Get(s.ctx, "app", "there")
+	_, err = s.store.Calls.Get(s.ctx, "app", "there")
+	s.ErrorIs(err, ErrNoCall, "its row is in the shard that ran it alone")
+	found, err := s.other.Calls.Get(s.ctx, "app", "there")
 	s.Require().NoError(err)
 	s.Equal("there", found.ID)
 }
@@ -90,317 +92,12 @@ func (s *ShardedStoreSuite) TestASessionCarriedOnInAnotherShardIsListedOnce() {
 	s.Equal(SessionRunning, sessions[0].State)
 }
 
-// carriedOn writes what a router of the other shard writes of session id of "app" when it
-// carries the session on there, having opened it at opened.
-func (s *ShardedStoreSuite) carriedOn(id string, opened time.Time) {
-	carried := &AgentSession{ID: id, CustomerID: "app", AgentName: "docs", UserID: "jlahey", CallerKind: "user",
-		CreatedAt: s.base, OpenedAt: opened, Remembers: new(false)}
-	s.Require().NoError(s.other.Sessions.Upsert(s.ctx, carried))
-	s.Require().NoError(s.other.Sessions.Supersede(s.ctx, "app", id, opened))
-}
-
-// answered records a turn of session id of "app" ending at, in into's shard.
-func (s *ShardedStoreSuite) answered(into *Store, id string, at time.Time) {
-	response := id + "-" + at.Format(time.RFC3339)
-	s.Require().NoError(into.Responses.Insert(s.ctx, &AgentResponse{ID: response, SessionID: id, CustomerID: "app", CreatedAt: at}))
-	s.Require().NoError(into.Responses.Finish(s.ctx, "app", response, ResponseCompleted, "", at))
-}
-
-func (s *ShardedStoreSuite) TestASessionCarriedOnInAnotherShardIsListedOnceOnEveryPageWithItsPin() {
-	s.opened("chat", "app", s.base, nil)
-	_, err := s.store.Sessions.Pin(s.ctx, "app", "chat", true, s.base)
-	s.Require().NoError(err)
-	s.answered(s.store, "chat", s.base.Add(10*time.Minute))
-	s.Require().NoError(s.store.Sessions.Close(s.ctx, "app", "chat", s.base, s.base.Add(11*time.Minute), ""))
-	// Answered between chat's last answer here and its first there, so on pages of one session
-	// each of chat's two rows falls on a page of its own.
-	s.opened("other", "app", s.base.Add(15*time.Minute), nil)
-	s.answered(s.store, "other", s.base.Add(20*time.Minute))
-	s.carriedOn("chat", s.base.Add(25*time.Minute))
-	s.answered(s.other, "chat", s.base.Add(30*time.Minute))
-
-	listed := s.pagesOfOne()
-	s.Equal([]string{"chat", "other"}, sessionIDs(listed), "once, by the row it runs in")
-	s.NotNil(listed[0].PinnedAt, "pinned before it was carried on")
-	s.Equal(SessionRunning, listed[0].State)
-}
-
-func (s *ShardedStoreSuite) TestALateReopenWrittenInTheShardASessionLeftKeepsItListedOnce() {
-	s.opened("chat", "app", s.base, nil)
-	s.answered(s.store, "chat", s.base.Add(10*time.Minute))
-	s.Require().NoError(s.store.Sessions.Close(s.ctx, "app", "chat", s.base, s.base.Add(11*time.Minute), ""))
-	s.opened("other", "app", s.base.Add(15*time.Minute), nil)
-	s.answered(s.store, "other", s.base.Add(20*time.Minute))
-	s.carriedOn("chat", s.base.Add(25*time.Minute))
-	s.answered(s.other, "chat", s.base.Add(30*time.Minute))
-
-	// A router of this shard reopened it before it was carried on there, and the row of that
-	// reopen lands only now. Its supersede comes next, and may fail.
-	late := &AgentSession{ID: "chat", CustomerID: "app", AgentName: "docs", UserID: "jlahey", CallerKind: "user",
-		CreatedAt: s.base, OpenedAt: s.base.Add(12 * time.Minute)}
-	s.Require().NoError(s.store.Sessions.Upsert(s.ctx, late))
-
-	s.Equal([]string{"chat", "other"}, sessionIDs(s.pagesOfOne()), "listed by the row it runs in alone")
-}
-
-// pagesOfOne lists the sessions of "app" one to a page, following each page's cursor.
-func (s *ShardedStoreSuite) pagesOfOne() []AgentSession {
-	var listed []AgentSession
-	filter := SessionFilter{Limit: 1}
-	for range 5 {
-		page, err := s.store.Sessions.Select(s.ctx, "app", filter)
-		s.Require().NoError(err)
-		s.Require().NotEmpty(page)
-		listed = append(listed, page[0])
-		if len(page) == 1 {
-			break
-		}
-		filter.Cursor = after(page[0])
-	}
-	return listed
-}
-
-func (s *ShardedStoreSuite) TestASessionCarriedOnInAnotherShardIsFoundAsItIsThereFromTheShardItLeft() {
-	s.opened("chat", "app", s.base, nil)
-	s.Require().NoError(s.store.Sessions.Close(s.ctx, "app", "chat", s.base, s.base.Add(time.Minute), "left"))
-	s.carriedOn("chat", s.base.Add(time.Hour))
-
-	found, err := s.store.Sessions.Get(s.ctx, "app", "chat")
-	s.Require().NoError(err)
-	s.Equal(SessionRunning, found.State, "the row it runs in, not the one it left closed here")
-	s.Nil(found.ClosedAt)
-	s.Empty(found.EndReason)
-}
-
-func (s *ShardedStoreSuite) TestASessionCarriedOnInAnotherShardKeepsWhatItsRowHereSaid() {
-	s.opened("chat", "app", s.base, func(session *AgentSession) {
-		session.Modality = ModalityVoice
-		session.Remembers = new(true)
-	})
-	s.answered(s.store, "chat", s.base.Add(10*time.Minute))
-	s.changed("chat", "review_score = ?", 4)
-	s.Require().NoError(s.store.Sessions.Close(s.ctx, "app", "chat", s.base, s.base.Add(11*time.Minute), ""))
-	s.carriedOn("chat", s.base.Add(time.Hour))
-
-	found, err := s.other.Sessions.Get(s.ctx, "app", "chat")
-	s.Require().NoError(err)
-	s.Equal(SessionRunning, found.State)
-	s.Require().NotNil(found.LastResponseAt, "it sorts by its last answer, not by when it began")
-	s.True(found.LastResponseAt.Equal(s.base.Add(10 * time.Minute)))
-	s.Require().NotNil(found.ReviewScore)
-	s.Equal(4, *found.ReviewScore)
-	s.Equal(ModalityVoice, found.Modality, "a session spoken in stays a voice one")
-	s.Require().NotNil(found.Remembers)
-	s.True(*found.Remembers, "deleting it still forgets what it taught the memory store")
-}
-
-// A router of the release before carries a session on in another shard into a row that says no
-// project tag: the row it left still does, whoever carried it on. One it opened itself says none.
-func (s *ShardedStoreSuite) TestASessionTheReleaseBeforeCarriedOnElsewhereKeepsItsProjectTag() {
-	opened := s.base.Add(time.Hour)
-	for id, tag := range map[string]string{"backends": "alpha", "devices": ""} {
-		row := func() *AgentSession {
-			return &AgentSession{ID: id, CustomerID: "app", UserID: "user", Project: "alpha", CreatedAt: s.base, OpenedAt: s.base}
-		}
-		left := row()
-		left.ProjectTag = &tag
-		s.Require().NoError(s.store.Sessions.Upsert(s.ctx, left))
-		// The other kind of caller carries it on: its kind alone would say the opposite.
-		carried := row()
-		carried.OpenedAt, carried.CallerKind = opened, map[string]string{"backends": "authenticated", "devices": "server"}[id]
-		s.Require().NoError(s.other.Sessions.Upsert(s.ctx, carried))
-		s.Require().NoError(s.other.Sessions.Supersede(s.ctx, "app", id, opened))
-
-		for _, store := range []*Store{s.store, s.other} {
-			found, err := store.Sessions.Get(s.ctx, "app", id)
-			s.Require().NoError(err)
-			s.Require().NoError(store.Sessions.ReadProjectTag(s.ctx, &found))
-			s.Equal(tag, found.TaggedProject(), id)
-		}
-	}
-}
-
-// No row says the tag of a session from before it was kept. The kind of caller that opened it
-// decides, not of who carried it on elsewhere, wherever it is read and wherever it ran since.
-func (s *ShardedStoreSuite) TestASessionFromBeforeCarriedOnElsewhereIsTaggedByWhoOpenedIt() {
-	type run struct {
-		at    *Store
-		opens time.Duration
-		kind  string
-		// answered is the hour it answered first, zero for a run that never did.
-		answered time.Duration
-	}
-	const before = -1
-	server, device := "server", "authenticated"
-	for name, tried := range map[string]struct {
-		runs []run
-		fork bool
-		want string
-	}{
-		"a device's carried on by a backend":       {runs: []run{{s.store, 0, device, 0}, {s.other, 1, server, 0}}},
-		"a backend's carried on by a device":       {runs: []run{{s.store, 0, server, 0}, {s.other, 1, device, 0}}, want: "alpha"},
-		"a device's from before opened_at":         {runs: []run{{s.store, before, device, 0}, {s.other, 1, server, 0}}},
-		"a backend's from before opened_at":        {runs: []run{{s.store, before, server, 0}, {s.other, 1, device, 0}}, want: "alpha"},
-		"a device's that went back":                {runs: []run{{s.store, 4, device, 1}, {s.other, 2, server, 3}}},
-		"a backend's that went back":               {runs: []run{{s.store, 4, server, 1}, {s.other, 2, device, 3}}, want: "alpha"},
-		"a device's that went back, from before":   {runs: []run{{s.store, 4, device, 1}, {s.other, before, server, 3}}},
-		"a backend's that went back, from before":  {runs: []run{{s.store, 4, server, 1}, {s.other, before, device, 3}}, want: "alpha"},
-		"a backend's carried on twice":             {runs: []run{{s.store, 2, server, 1}, {s.other, 4, device, 5}}, want: "alpha"},
-		"a device's answered only once carried on": {runs: []run{{s.store, 1, device, 0}, {s.other, 2, server, 3}}},
-		"both before opened_at, a device's first":  {runs: []run{{s.store, before, device, 1}, {s.other, before, server, 2}}},
-		"both before opened_at, a backend's first": {runs: []run{{s.store, before, server, 1}, {s.other, before, device, 2}}, want: "alpha"},
-		"run at one moment":                        {runs: []run{{s.store, 1, server, 0}, {s.other, 1, device, 0}}},
-		"run at one moment, the other way":         {runs: []run{{s.store, 1, device, 0}, {s.other, 1, server, 0}}},
-		"run at one moment by backends":            {runs: []run{{s.store, 1, server, 0}, {s.other, 1, server, 0}}, want: "alpha"},
-		"a backend's fork":                         {runs: []run{{s.store, 0, server, 0}, {s.other, 1, server, 0}}, fork: true},
-	} {
-		s.Run(name, func() {
-			for at, ran := range tried.runs {
-				row := AgentSession{ID: name, CustomerID: "app", Project: "alpha", CallerKind: ran.kind, CreatedAt: s.base}
-				if ran.opens != before {
-					row.OpenedAt = s.base.Add(ran.opens * time.Hour)
-				}
-				if tried.fork {
-					row.ForkedFrom = "parent"
-				}
-				s.Require().NoError(ran.at.Sessions.Upsert(s.ctx, &row))
-				// Another customer's response under its id is none of its own.
-				if at > 0 {
-					s.Require().NoError(ran.at.Responses.Insert(s.ctx, &AgentResponse{ID: name + " globex", SessionID: name,
-						CustomerID: "globex", CreatedAt: s.base.Add(-time.Hour)}))
-				}
-				if ran.answered == 0 {
-					continue
-				}
-				// It answered again later, after every run had opened.
-				for _, answered := range []time.Duration{ran.answered, 9} {
-					s.Require().NoError(ran.at.Responses.Insert(s.ctx, &AgentResponse{ID: fmt.Sprint(name, at, answered), SessionID: name,
-						CustomerID: "app", CreatedAt: s.base.Add(answered * time.Hour)}))
-				}
-			}
-
-			for _, store := range []*Store{s.store, s.other} {
-				found, err := store.Sessions.Get(s.ctx, "app", name)
-				s.Require().NoError(err)
-				s.Require().NoError(store.Sessions.ReadProjectTag(s.ctx, &found))
-				s.Equal(tried.want, found.TaggedProject())
-			}
-		})
-	}
-}
-
-// A row that says the tag says it for the session, also of a run after the one that opened it.
-func (s *ShardedStoreSuite) TestALaterRunsProjectTagStandsOverWhoOpenedTheSession() {
-	s.Require().NoError(s.store.Sessions.Upsert(s.ctx, &AgentSession{ID: "one", CustomerID: "app", Project: "alpha",
-		CallerKind: "authenticated", CreatedAt: s.base, OpenedAt: s.base}))
-	s.Require().NoError(s.other.Sessions.Upsert(s.ctx, &AgentSession{ID: "one", CustomerID: "app", Project: "alpha",
-		CallerKind: "authenticated", ProjectTag: new("beta"), CreatedAt: s.base, OpenedAt: s.base.Add(time.Hour)}))
-
-	for range 20 {
-		for _, store := range []*Store{s.store, s.other} {
-			row := AgentSession{ID: "one", CustomerID: "app", Project: "alpha"}
-			s.Require().NoError(store.Sessions.ReadProjectTag(s.ctx, &row))
-			s.Equal("beta", row.TaggedProject())
-		}
-	}
-}
-
-// A device's fork naming no project has its backend's tag all the same.
-func (s *ShardedStoreSuite) TestAForkNamingNoProjectCarriedOnElsewhereKeepsItsProjectTag() {
-	opened := s.base.Add(time.Hour)
-	left := AgentSession{ID: "fork", CustomerID: "app", ForkedFrom: "parent", ProjectTag: new("alpha"), CreatedAt: s.base, OpenedAt: s.base}
-	s.Require().NoError(s.store.Sessions.Upsert(s.ctx, &left))
-	carried := AgentSession{ID: "fork", CustomerID: "app", ForkedFrom: "parent", CreatedAt: s.base, OpenedAt: opened}
-	s.Require().NoError(s.other.Sessions.Upsert(s.ctx, &carried))
-	s.Require().NoError(s.other.Sessions.Supersede(s.ctx, "app", "fork", opened))
-
-	for _, store := range []*Store{s.store, s.other} {
-		found, err := store.Sessions.Get(s.ctx, "app", "fork")
-		s.Require().NoError(err)
-		s.Require().NoError(store.Sessions.ReadProjectTag(s.ctx, &found))
-		s.Equal("alpha", found.TaggedProject())
-	}
-}
-
-func (s *ShardedStoreSuite) TestAProjectTagIsFoundWhileAThirdShardIsDown() {
-	opened := s.base.Add(time.Hour)
-	left := AgentSession{ID: "one", CustomerID: "app", Project: "alpha", ProjectTag: new("beta"), CreatedAt: s.base, OpenedAt: s.base}
-	s.Require().NoError(s.store.Sessions.Upsert(s.ctx, &left))
-	carried := AgentSession{ID: "one", CustomerID: "app", Project: "alpha", CreatedAt: s.base, OpenedAt: opened}
-	s.Require().NoError(s.other.Sessions.Upsert(s.ctx, &carried))
-
-	row := AgentSession{ID: "one", CustomerID: "app", Project: "alpha"}
-	s.Require().NoError(s.withAShardDown(s.other.shardDSN, s.shardDSN).Sessions.ReadProjectTag(s.ctx, &row))
-
-	s.Equal("beta", row.TaggedProject())
-}
-
-func (s *ShardedStoreSuite) TestAnotherSessionsProjectTagIsNotASessionsOwn() {
-	for _, theirs := range []AgentSession{{ID: "one", CustomerID: "globex"}, {ID: "two", CustomerID: "app"}} {
-		theirs.Project, theirs.ProjectTag, theirs.CreatedAt = "alpha", new("alpha"), s.base
-		s.Require().NoError(s.other.Sessions.Upsert(s.ctx, &theirs))
-	}
-	s.Require().NoError(s.store.Sessions.Upsert(s.ctx, &AgentSession{ID: "one", CustomerID: "app", Project: "alpha",
-		CallerKind: "guest", CreatedAt: s.base, OpenedAt: s.base.Add(time.Hour)}))
-
-	found, err := s.store.Sessions.Get(s.ctx, "app", "one")
-
-	s.Require().NoError(err)
-	s.Require().NoError(s.store.Sessions.ReadProjectTag(s.ctx, &found))
-	s.Equal(new(""), found.ProjectTag, "every shard answered")
-}
-
-// While the shard that may say it is down a session has no tag to carry on with, and is read.
-func (s *ShardedStoreSuite) TestASessionsProjectTagInAShardThatIsDownIsUnreadAndFailsNoOtherRead() {
-	s.Require().NoError(s.store.Sessions.Upsert(s.ctx, &AgentSession{ID: "here", CustomerID: "app", Project: "alpha",
-		CallerKind: "server", CreatedAt: s.base, OpenedAt: s.base.Add(time.Hour)}))
-	down := s.withAShardDown(s.shardDSN, s.other.shardDSN)
-
-	found, err := down.Sessions.Get(s.ctx, "app", "here")
-	s.Require().NoError(err)
-
-	s.ErrorIs(down.Sessions.ReadProjectTag(s.ctx, &found), ErrProjectTagUnread)
-	s.Nil(found.ProjectTag)
-}
-
-func (s *ShardedStoreSuite) TestASupersedeTriedAgainAfterAShardFailedTakesWhatTheEarlierRowSaid() {
-	s.opened("chat", "app", s.base, func(session *AgentSession) { session.Remembers = new(true) })
-	_, err := s.store.Sessions.Pin(s.ctx, "app", "chat", true, s.base)
-	s.Require().NoError(err)
-	s.Require().NoError(s.store.Sessions.Close(s.ctx, "app", "chat", s.base, s.base.Add(time.Minute), ""))
-	opened := s.base.Add(time.Hour)
-	carried := &AgentSession{ID: "chat", CustomerID: "app", AgentName: "docs", UserID: "jlahey", CallerKind: "user",
-		CreatedAt: s.base, OpenedAt: opened, Remembers: new(false)}
-	s.Require().NoError(s.other.Sessions.Upsert(s.ctx, carried))
-
-	// The first try also reads a shard that is down, and fails once the shard holding the
-	// earlier row has answered. The recorder tries again.
-	s.Require().Error(s.withAShardDown(s.other.shardDSN, s.shardDSN).Sessions.Supersede(s.ctx, "app", "chat", opened))
-	s.Require().NoError(s.other.Sessions.Supersede(s.ctx, "app", "chat", opened))
-
-	found, err := s.other.Sessions.Get(s.ctx, "app", "chat")
-	s.Require().NoError(err)
-	s.NotNil(found.PinnedAt, "pinned before it was carried on")
-	s.Require().NotNil(found.Remembers)
-	s.True(*found.Remembers, "deleting it still forgets what its first run taught the memory store")
-}
-
 func (s *ShardedStoreSuite) TestASessionHereIsFoundWhileAnotherShardIsDown() {
 	s.opened("chat", "app", s.base, nil)
 
 	found, err := s.withAShardDown(s.shardDSN, s.other.shardDSN).Sessions.Get(s.ctx, "app", "chat")
 	s.Require().NoError(err, "a shard that does not hold the session failed its read")
 	s.Equal("chat", found.ID)
-}
-
-func (s *ShardedStoreSuite) TestASessionCarriedOnInAShardThatIsDownIsFoundAsItLeftHere() {
-	s.opened("chat", "app", s.base, nil)
-	s.Require().NoError(s.store.Sessions.Close(s.ctx, "app", "chat", s.base, s.base.Add(time.Minute), "left"))
-	s.carriedOn("chat", s.base.Add(time.Hour))
-
-	found, err := s.withAShardDown(s.shardDSN).Sessions.Get(s.ctx, "app", "chat")
-	s.Require().NoError(err, "a session of the caller's own read as nobody's")
-	s.Equal(SessionClosed, found.State, "as it was when it left here")
 }
 
 // withAShardDown is a router of the shard own that reads the shards up and one more, which is
@@ -414,18 +111,6 @@ func (s *ShardedStoreSuite) withAShardDown(own string, up ...string) *Store {
 	s.Require().NoError(err)
 	s.T().Cleanup(func() { s.NoError(router.Close()) })
 	return router
-}
-
-func (s *ShardedStoreSuite) TestALateRowFromARouterThatHeldASessionEarlierLeavesItListedOnceByTheRunOpenedSince() {
-	s.opened("chat", "app", s.base, func(session *AgentSession) { session.OpenedAt = s.base.Add(2 * time.Hour) })
-	s.answered(s.store, "chat", s.base.Add(3*time.Hour))
-	s.opened("other", "app", s.base.Add(time.Minute), nil)
-	// The other shard's write of a run before the one here, landing after it.
-	s.carriedOn("chat", s.base.Add(time.Hour))
-
-	listed := s.pagesOfOne()
-	s.Equal([]string{"chat", "other"}, sessionIDs(listed), "listed by the row of the run opened since alone")
-	s.Equal(SessionRunning, listed[0].State)
 }
 
 func (s *ShardedStoreSuite) TestSessionsOpenInTwoShardsAtOnceAreOnePeak() {

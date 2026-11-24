@@ -181,11 +181,10 @@ func startUsageSweeper(ctx context.Context, options routing.SweeperOptions) (sto
 	}
 }
 
-// startStatsShipper ships the shard's stats until the returned function stops it and it has
-// given its lock back.
-func startStatsShipper(ctx context.Context, db *store.Store, logger *slog.Logger) (stop func()) {
+// startShipper ships with shipper until the returned function stops it and it has given its
+// lock back.
+func startShipper(ctx context.Context, shipper *store.Shipper) (stop func()) {
 	background, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	shipper := db.StatsShipper(logger, 0)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

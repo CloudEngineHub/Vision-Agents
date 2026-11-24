@@ -683,13 +683,42 @@ func (s *DataMoveSuite) TestAnImportCannotOverwriteAnotherCustomersRow() {
 	row, err := json.Marshal(s.export("acme").of("agent_configs")[0])
 	s.Require().NoError(err)
 
-	s.ErrorIs(s.destination.ImportRow(s.ctx, "intruder", "agent_configs", row), ErrAnotherCustomersRow)
+	err = s.destination.ImportRow(s.ctx, "intruder", "agent_configs", row)
 
+	s.ErrorIs(err, ErrAnotherCustomersRow)
+	s.ErrorIs(err, ErrInvalidImport, "the export's to correct, not the router's failure")
+	s.EqualError(err, `store: import agent_configs:{"id":"`+id+`"}: a row with this key belongs to another customer here`)
 	var name, owner string
 	s.Require().NoError(s.destination.GlobalDB().QueryRowContext(s.ctx,
 		"SELECT name, customer_id FROM agent_configs WHERE id = ?", id).Scan(&name, &owner))
 	s.Equal("theirs", name)
 	s.Equal("resident", owner)
+}
+
+func (s *DataMoveSuite) TestARefusedRowIsNamedByEveryColumnOfItsKey() {
+	session := AgentSession{ID: "session-1", CustomerID: "acme", State: SessionClosed}
+	s.Require().NoError(session.Validate())
+	s.Require().NoError(s.source.Sessions.Upsert(s.ctx, &session))
+	s.Require().NoError(s.source.BranchMessages.UpsertMany(s.ctx, []AgentBranchMessage{{
+		SessionID: "session-1", OriginalMessageID: "message-1", CustomerID: "acme", SwitchID: "switch-1"}}))
+	refused := 0
+	for _, row := range s.export("acme").rows {
+		encoded, err := json.Marshal(row.row)
+		s.Require().NoError(err)
+		if row.table != "agent_branch_messages" {
+			s.Require().NoError(s.destination.ImportRow(s.ctx, "moved", row.table, encoded))
+			continue
+		}
+		s.Require().NoError(s.destination.BranchMessages.UpsertMany(s.ctx, []AgentBranchMessage{{
+			SessionID: "session-1", OriginalMessageID: "message-1", CustomerID: "resident", SwitchID: "theirs"}}))
+
+		err = s.destination.ImportRow(s.ctx, "moved", row.table, encoded)
+
+		s.Require().ErrorIs(err, ErrAnotherCustomersRow)
+		s.ErrorContains(err, `agent_branch_messages:{"original_message_id":"message-1","session_id":"session-1"}`)
+		refused++
+	}
+	s.Equal(1, refused)
 }
 
 func (s *DataMoveSuite) TestAReplayedChangeCannotDeleteAnotherCustomersRow() {
@@ -705,7 +734,9 @@ func (s *DataMoveSuite) TestAReplayedChangeCannotDeleteAnotherCustomersRow() {
 		id, "resident", "theirs", "be brief")
 	s.Require().NoError(err)
 
-	s.ErrorIs(s.destination.ApplyChanges(s.ctx, "intruder", changes), ErrAnotherCustomersRow, "the insert is refused")
+	err = s.destination.ApplyChanges(s.ctx, "intruder", changes)
+	s.ErrorIs(err, ErrAnotherCustomersRow, "the insert is refused")
+	s.ErrorContains(err, `agent_configs:{"id":"`+id+`"}`)
 	deletes := slices.DeleteFunc(changes, func(change DataChange) bool { return change.Op != ChangeDelete })
 	s.Require().NotEmpty(deletes)
 	s.Require().NoError(s.destination.ApplyChanges(s.ctx, "intruder", deletes))

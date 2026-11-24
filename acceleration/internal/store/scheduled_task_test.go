@@ -1533,9 +1533,14 @@ func (s *StoreSuite) TestScheduledTaskQueryBudgets() {
 	s.Equal(4, s.countQueries(func() {
 		s.Require().NoError(s.store.ScheduledTasks.PauseForConfig(s.ctx, "acme", "config-1"))
 	}), "PauseForConfig")
-	s.Equal(1, s.countQueries(func() {
+	// The transaction, the tasks and their runs locked, and the delete with its changes redacted.
+	s.Equal(5, s.countQueries(func() {
 		s.Require().NoError(s.store.ScheduledTasks.DeleteForSession(s.ctx, "acme", "session-1"))
 	}), "DeleteForSession")
+	// The transaction and the lock, which finds none.
+	s.Equal(3, s.countQueries(func() {
+		s.Require().NoError(s.store.ScheduledTasks.DeleteForSession(s.ctx, "acme", "session-none"))
+	}), "DeleteForSession of a session with no tasks")
 	s.Equal(1, s.countQueries(func() { s.Require().NoError(s.store.ScheduledTasks.Delete(s.ctx, "acme", "st-new")) }), "Delete")
 	// The lost runs by hand settled, then one batch of runs and one of tasks, with nothing to prune.
 	s.Equal(3, s.countQueries(func() {

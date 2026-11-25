@@ -912,7 +912,7 @@ func (s *StoreSuite) TestEveryHotTableIsReadByIndex() {
 			return err
 		}},
 		{name: "Spend.Teams shipped", index: "shard_spend_hourly_customer_idx", sharded: true, run: func(ctx context.Context, store *Store) error {
-			_, err := store.Spend.Teams(ctx, "org-7", []time.Time{since}, s.base.AddDate(0, 0, -1))
+			_, err := store.Spend.Teams(ctx, "org-7", []time.Time{since}, s.base.AddDate(0, 0, -1), true)
 			return err
 		}},
 		{name: "Spend.Daily shipped", index: "shard_spend_hourly_started_idx", sharded: true, run: func(ctx context.Context, store *Store) error {

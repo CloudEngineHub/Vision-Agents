@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS session_index (
     title text NOT NULL DEFAULT '',
     description text NOT NULL DEFAULT '',
     project text NOT NULL DEFAULT '',
+    project_tag text,
     custom jsonb NOT NULL DEFAULT '{}',
     model_overwrites jsonb NOT NULL DEFAULT '{}',
     forked_from text,

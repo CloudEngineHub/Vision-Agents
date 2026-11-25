@@ -210,10 +210,10 @@ var dataTables = []dataTable{
 	// row that replaced it arrives, rather than after the import skipped that row beside it.
 	{name: "opt_outs", customer: "customer_id", order: "revoked_at IS NULL"},
 	{name: "recordings", customer: "customer_id", shard: true},
-	{name: "agent_sessions", customer: "customer_id", shard: true},
+	{name: "agent_sessions", customer: "customer_id", shard: true, vouched: []string{"changed_at"}},
 	{name: "agent_session_tools", customer: "customer_id", parent: "agent_sessions", parentColumn: "session_id", shard: true},
 	// After the sessions their session_id points at.
-	{name: "calls", customer: "customer_id", shard: true, references: ofSession},
+	{name: "calls", customer: "customer_id", shard: true, vouched: []string{"changed_at"}, references: ofSession},
 	{name: "agent_responses", customer: "customer_id", shard: true, references: ofSession},
 	{name: "agent_response_items", parent: "agent_responses", parentColumn: "response_id", shard: true},
 	{name: "conversation_documents", customer: "customer_id", shard: true},

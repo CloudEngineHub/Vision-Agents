@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -636,48 +637,66 @@ func (r *Sessions) HeldConversations(ctx context.Context, customerID string, aft
 }
 
 // CallerKinds are the kinds of caller whose sessions held a customer's conversation under a
-// user id, on every shard, each once.
+// user id, across this shard and the shared index of the others, each once.
 func (r *Sessions) CallerKinds(ctx context.Context, customerID, conversationID, userID string) ([]string, error) {
-	lists, err := everyShard(ctx, r.store, func(ctx context.Context, db bun.IDB) ([]string, error) {
-		var kinds []string
-		err := db.NewSelect().Model((*AgentSession)(nil)).
-			Distinct().Column("caller_kind").
-			Where("customer_id = ?", customerID).
-			Where("conversation_id = ?", conversationID).
-			Where("user_id = ?", userID).
-			Scan(ctx, &kinds)
-		return kinds, err
-	})
+	var kinds []string
+	err := r.store.shard.NewSelect().Model((*AgentSession)(nil)).
+		Distinct().Column("caller_kind").
+		Where("customer_id = ?", customerID).
+		Where("conversation_id = ?", conversationID).
+		Where("user_id = ?", userID).
+		Scan(ctx, &kinds)
 	if err != nil {
 		return nil, stack.Wrap(fmt.Errorf("store: caller kinds: %w", err))
 	}
-	var kinds []string
-	for _, list := range lists {
-		for _, kind := range list {
-			if !slices.Contains(kinds, kind) {
-				kinds = append(kinds, kind)
-			}
+	if !r.store.Indexed() {
+		return kinds, nil
+	}
+	var others []string
+	err = r.store.global.NewSelect().TableExpr("session_index").
+		Distinct().Column("caller_kind").
+		Where("customer_id = ?", customerID).
+		Where("conversation_id = ?", conversationID).
+		Where("user_id = ?", userID).
+		Where("shard <> ?", r.store.ShardName()).
+		Scan(ctx, &others)
+	if err != nil {
+		return nil, stack.Wrap(fmt.Errorf("store: caller kinds: %w", err))
+	}
+	for _, kind := range others {
+		if !slices.Contains(kinds, kind) {
+			kinds = append(kinds, kind)
 		}
 	}
 	return kinds, nil
 }
 
 // HeldAsGuest reports whether a guest whose token said the role held a session under a customer's
-// user id, on any shard. Such a user's next token says the role though other sessions they held
-// may say none: before a refreshed guest token kept the role, a guest came back from a refresh as
-// a signed-in user.
+// user id, on this shard or in the shared index of the others. Such a user's next token says the
+// role though other sessions they held may say none: before a refreshed guest token kept the
+// role, a guest came back from a refresh as a signed-in user.
 func (r *Sessions) HeldAsGuest(ctx context.Context, customerID, userID string) (bool, error) {
-	held, err := everyShard(ctx, r.store, func(ctx context.Context, db bun.IDB) (bool, error) {
-		return db.NewSelect().Model((*AgentSession)(nil)).
-			Where("customer_id = ?", customerID).
-			Where("user_id = ?", userID).
-			Where("caller_kind = ?", UserKindGuest).
-			Exists(ctx)
-	})
+	held, err := r.store.shard.NewSelect().Model((*AgentSession)(nil)).
+		Where("customer_id = ?", customerID).
+		Where("user_id = ?", userID).
+		Where("caller_kind = ?", UserKindGuest).
+		Exists(ctx)
 	if err != nil {
 		return false, stack.Wrap(fmt.Errorf("store: held as guest: %w", err))
 	}
-	return slices.Contains(held, true), nil
+	if held || !r.store.Indexed() {
+		return held, nil
+	}
+	held, err = r.store.global.NewSelect().TableExpr("session_index").
+		Where("customer_id = ?", customerID).
+		Where("user_id = ?", userID).
+		Where("caller_kind = ?", UserKindGuest).
+		Where("shard <> ?", r.store.ShardName()).
+		Exists(ctx)
+	if err != nil {
+		return false, stack.Wrap(fmt.Errorf("store: held as guest: %w", err))
+	}
+	return held, nil
 }
 
 // Delete deletes one of a customer's sessions, and its turns and their items with it. A

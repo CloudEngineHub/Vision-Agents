@@ -209,3 +209,22 @@ func (s *ShardedStoreSuite) TestAGuestsSessionsInEveryShardAreClaimedOnceEachSha
 	_, err = s.store.Users.ClaimGuest(s.ctx, "app", "guest-1", "randy")
 	s.ErrorIs(err, ErrGuestClaimed)
 }
+
+func (s *ShardedStoreSuite) TestLegacyPinsAreEveryShardsCountSummed() {
+	s.working()
+	s.opened("here", "acme", s.base, nil)
+	for _, id := range []string{"there-1", "there-2"} {
+		s.Require().NoError(s.other.Sessions.Upsert(s.ctx, &AgentSession{ID: id, CustomerID: "acme", AgentName: "docs", UserID: "jlahey",
+			CallerKind: "user", CreatedAt: s.base}))
+	}
+	s.Require().NoError(s.other.Sessions.Upsert(s.ctx, &AgentSession{ID: "pinned", CustomerID: "acme", AgentName: "docs", UserID: "jlahey",
+		CallerKind: "user", CreatedAt: s.base, StreamAppPK: 99}))
+	s.Require().NoError(s.other.Calls.Start(s.ctx, &Call{ID: "call", CustomerID: "acme", StartedAt: s.base}))
+	ctx, cancel := context.WithTimeout(s.ctx, 10*time.Second)
+	defer cancel()
+
+	counted, err := s.store.LegacyStreamPins(ctx, 7)
+
+	s.Require().NoError(err)
+	s.ElementsMatch([]LegacyCount{{Kind: "session", CustomerID: "acme", Rows: 3}, {Kind: "call", CustomerID: "acme", Rows: 1}}, counted)
+}

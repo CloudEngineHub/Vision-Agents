@@ -22,6 +22,9 @@ const (
 	ShardJobForgetUser = "forget_user"
 	// ShardJobClaimGuest moves a claimed guest's sessions onto the account (Users.ClaimGuest).
 	ShardJobClaimGuest = "claim_guest"
+	// ShardJobLegacyPins counts what customers still have in the deployment's own Stream app
+	// (LegacyStreamPins).
+	ShardJobLegacyPins = "legacy_pins"
 	// ShardJobDeleteBranches deletes the hidden branch messages of a user's sessions
 	// (BranchMessages.DeleteUser).
 	ShardJobDeleteBranches = "delete_branch_messages"
@@ -32,7 +35,7 @@ const (
 
 // shardJobKinds are the kinds this router runs. A router claims no run of a kind it does not
 // know, which a newer release queued.
-var shardJobKinds = []string{ShardJobForgetUser, ShardJobClaimGuest, ShardJobDeleteBranches, ShardJobDeleteInvocations}
+var shardJobKinds = []string{ShardJobForgetUser, ShardJobClaimGuest, ShardJobLegacyPins, ShardJobDeleteBranches, ShardJobDeleteInvocations}
 
 // States of a shard's run of a job (ShardJobRun.State).
 const (
@@ -328,6 +331,12 @@ func (s *Store) runShardJob(ctx context.Context, job ShardJob) (any, error) {
 		}
 		moved, err := moveGuestSessions(ctx, s.shard, job.CustomerID, args)
 		return guestSessions{Sessions: moved}, err
+	case ShardJobLegacyPins:
+		var args legacyPinsArgs
+		if err := json.Unmarshal(job.Args, &args); err != nil {
+			return nil, err
+		}
+		return s.legacyPinsHere(ctx, args.Deployment)
 	case ShardJobDeleteBranches:
 		var args userArgs
 		if err := json.Unmarshal(job.Args, &args); err != nil {

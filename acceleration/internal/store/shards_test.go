@@ -5,6 +5,8 @@ package store
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/GetStream/Vision-Agents/acceleration/internal/usage"
 )
 
 func (s *ShardedStoreSuite) TestACallAnotherShardRanIsListedOnceShippedButFoundThereAlone() {
@@ -34,14 +36,31 @@ func (s *ShardedStoreSuite) TestSpendIsWhatEveryShardShipped() {
 	s.Require().NoError(insertRequest(s.ctx, s.other, &Request{Modality: "llm", CustomerID: "app", Provider: "openai", Model: "gpt", StartedAt: s.base, CostMicros: 200}))
 	s.Require().NoError(s.store.ShipStats(s.ctx, s.base.Add(time.Minute)))
 
-	spent, err := s.store.Spend.Since(s.ctx, "app", s.base.Add(-time.Hour))
+	meters, err := s.store.Spend.Meters(s.ctx, []string{"app"}, s.base.Add(-time.Hour))
 	s.Require().NoError(err)
-	s.EqualValues(300, spent, "the other shard's request is not read before it ships")
+	s.Require().Len(meters, 1)
+	s.EqualValues(300, meters[0].CostMicros, "the other shard's request is not read before it ships")
 
 	s.Require().NoError(s.other.ShipStats(s.ctx, s.base.Add(time.Minute)))
-	spent, err = s.store.Spend.Since(s.ctx, "app", s.base.Add(-time.Hour))
+	meters, err = s.store.Spend.Meters(s.ctx, []string{"app"}, s.base.Add(-time.Hour))
 	s.Require().NoError(err)
-	s.EqualValues(500, spent)
+	s.Require().Len(meters, 1)
+	s.EqualValues(500, meters[0].CostMicros)
+}
+
+func (s *ShardedStoreSuite) TestSpendALimitReadsIsThisShardsRequestsShippedOrNot() {
+	s.Require().NoError(insertRequest(s.ctx, s.store, &Request{Modality: "llm", CustomerID: "app", Provider: "openai", Model: "gpt", StartedAt: s.base, CostMicros: 300, Billable: true}))
+	s.Require().NoError(insertRequest(s.ctx, s.other, &Request{Modality: "llm", CustomerID: "app", Provider: "openai", Model: "gpt", StartedAt: s.base, CostMicros: 200, Billable: true}))
+	s.Require().NoError(s.other.ShipStats(s.ctx, s.base.Add(time.Minute)))
+	// A window starting inside the hour: the hourly sums would count the whole hour or none of it.
+	since := s.base.Add(-time.Minute)
+
+	spent, err := s.store.Spend.Since(s.ctx, "app", since)
+	s.Require().NoError(err)
+	s.EqualValues(300, spent, "this shard's unshipped request, and not the other shard's")
+	subject, err := s.store.Spend.Subject(s.ctx, usage.SubjectRef{Subject: usage.SubjectApp, AppID: "app"}, since, false)
+	s.Require().NoError(err)
+	s.EqualValues(300, subject)
 }
 
 func (s *ShardedStoreSuite) TestARequestsLogIsInTheShardThatWroteIt() {

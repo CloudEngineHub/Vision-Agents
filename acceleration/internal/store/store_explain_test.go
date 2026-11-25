@@ -911,17 +911,8 @@ func (s *StoreSuite) TestEveryHotTableIsReadByIndex() {
 			_, err := store.Requests.CountByModel(ctx, "llm", s.base.Add(-7*24*time.Hour))
 			return err
 		}},
-		{name: "Spend.Since shipped", index: "shard_spend_hourly_customer_idx", sharded: true, run: func(ctx context.Context, store *Store) error {
-			_, err := store.Spend.Since(ctx, "customer-7", since)
-			return err
-		}},
 		{name: "Spend.Teams shipped", index: "shard_spend_hourly_customer_idx", sharded: true, run: func(ctx context.Context, store *Store) error {
 			_, err := store.Spend.Teams(ctx, "org-7", []time.Time{since}, s.base.AddDate(0, 0, -1))
-			return err
-		}},
-		{name: "Spend.Subject shipped", index: "shard_spend_hourly_customer_idx", sharded: true, run: func(ctx context.Context, store *Store) error {
-			_, err := store.Spend.Subject(ctx, usage.SubjectRef{OrganizationID: "org-7", Subject: usage.SubjectUser, AppID: "customer-7",
-				UserID: "user-7"}, since, true)
 			return err
 		}},
 		{name: "Spend.Daily shipped", index: "shard_spend_hourly_started_idx", sharded: true, run: func(ctx context.Context, store *Store) error {

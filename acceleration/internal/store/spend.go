@@ -46,11 +46,11 @@ func (r *Spend) Since(ctx context.Context, customerID string, since time.Time) (
 	return spent, nil
 }
 
-// spendOf is what some customers have spent since a moment.
+// spendOf is what some customers have spent since a moment, in this shard's requests: a limit
+// window starts inside an hour, and the hourly sums lag a ship behind.
 func spendOf(ctx context.Context, s *Store, customerIDs []string, since time.Time) (int64, error) {
-	from := s.spendRows()
 	var spent int64
-	err := from.db.NewSelect().TableExpr(from.table).
+	err := s.shard.NewSelect().TableExpr("requests").
 		ColumnExpr("COALESCE(SUM(cost_micros), 0)").
 		Where("customer_id IN (?)", bun.In(customerIDs)).
 		Where("started_at >= ?", since).
@@ -138,8 +138,8 @@ func (r *Spend) Subject(ctx context.Context, ref usage.SubjectRef, since time.Ti
 			}
 		}
 	}
-	from := r.store.spendRows()
-	query := from.db.NewSelect().TableExpr(from.table).
+	// This shard's requests, for spendOf's reasons.
+	query := r.store.shard.NewSelect().TableExpr("requests").
 		ColumnExpr("COALESCE(SUM(cost_micros), 0)").
 		Where("customer_id IN (?)", bun.In(apps)).
 		Where("started_at >= ?", since).

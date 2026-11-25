@@ -585,7 +585,7 @@ func (s *RefusedAttemptsSuite) sentEvents(keyVar string, refuse func()) map[stri
 	var mu sync.Mutex
 	events := map[string]*sentry.Event{}
 	client, err := sentry.NewClient(sentry.ClientOptions{
-		BeforeSend: func(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
+		Environment: "test", BeforeSend: func(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
 			mu.Lock()
 			defer mu.Unlock()
 			events[event.Tags["item"]] = event
@@ -650,7 +650,7 @@ func (s *RefusedAttemptsSuite) TestEveryRefusalStatusAlertsWithItsReason() {
 
 			s.Require().Contains(events, item)
 			s.Equal("usage alert: key_refused "+item+": "+tc.reason, events[item].Message)
-			s.Equal([]string{"usage_key_refused:" + item}, events[item].Fingerprint)
+			s.Equal([]string{"usage_key_refused:test:" + item}, events[item].Fingerprint)
 			s.Equal("key_refused", events[item].Tags["usage_alert"])
 		})
 	}
@@ -666,7 +666,7 @@ func (s *RefusedAttemptsSuite) TestAStatusWithNoReasonKeepsItsTitle() {
 
 	s.Require().Contains(events, item)
 	s.Equal("usage alert: key_refused "+item, events[item].Message)
-	s.Equal([]string{"usage_key_refused:" + item}, events[item].Fingerprint)
+	s.Equal([]string{"usage_key_refused:test:" + item}, events[item].Fingerprint)
 	s.Empty(describeRefusal("not an item"))
 	s.Empty(describeRefusal(keyVar + "/"))
 }

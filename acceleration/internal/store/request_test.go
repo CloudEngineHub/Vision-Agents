@@ -657,7 +657,6 @@ func (s *StoreSuite) TestRequestQueryBudgets() {
 		s.Require().NoError(err)
 	}), "InsertMany")
 	ids := []uuid.UUID{batch[0].UsageID, batch[1].UsageID}
-	shards := len(s.store.shards())
 	// The transaction, the shipping lock's bound and the update.
 	s.Equal(4, s.countQueries(func() {
 		s.Require().NoError(s.store.Requests.SetOrganization(s.ctx, ids, "org"))
@@ -685,12 +684,12 @@ func (s *StoreSuite) TestRequestQueryBudgets() {
 		s.Equal(int64(1), queued)
 		s.Require().NoError(err)
 	}), "Reship")
-	s.Equal(shards, s.countQueries(func() {
+	s.Equal(1, s.countQueries(func() {
 		count, err := s.store.Requests.CountByUser(s.ctx, "acme", "sam")
 		s.Require().NoError(err)
 		s.Equal(int64(1), count)
 	}), "CountByUser")
-	s.Equal(shards, s.countQueries(func() {
+	s.Equal(1, s.countQueries(func() {
 		renamed, err := s.store.Requests.RenameUser(s.ctx, "acme", "sam", "someone")
 		s.Require().NoError(err)
 		s.Equal(int64(1), renamed)

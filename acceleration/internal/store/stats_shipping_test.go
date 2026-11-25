@@ -228,6 +228,98 @@ func (s *ShardedStoreSuite) TestASessionListReadsEveryShardsSessionsWithTheirPin
 	s.Len(listed, 2)
 }
 
+// workedIn is one session of app's in into, opened at at and closed ten minutes later, with
+// two turns, a call of tool in the second, a phone call of five minutes and a request costing
+// cost.
+func (s *ShardedStoreSuite) workedIn(into *Store, id, user, tool string, failed bool, at time.Time, cost int64) {
+	s.Require().NoError(into.Sessions.Upsert(s.ctx, &AgentSession{ID: id, CustomerID: "app", AgentName: "docs",
+		ConfigID: "cfg-docs", UserID: user, CallerKind: "user", CreatedAt: at}))
+	s.Require().NoError(into.Sessions.Close(s.ctx, "app", id, at, at.Add(10*time.Minute), "hangup"))
+	s.Require().NoError(into.Responses.Insert(s.ctx, &AgentResponse{ID: id + "-1", SessionID: id, CustomerID: "app",
+		CreatedAt: at.Add(time.Minute)}))
+	s.Require().NoError(into.Responses.Insert(s.ctx, &AgentResponse{ID: id + "-2", SessionID: id, CustomerID: "app",
+		ParentResponseID: id + "-1", CreatedAt: at.Add(2 * time.Minute)}))
+	result := map[string]any{"call_id": id}
+	if failed {
+		result["error"] = "not found"
+	}
+	s.Require().NoError(into.ResponseItems.InsertMany(s.ctx, []AgentResponseItem{
+		{ResponseID: id + "-2", Ordinal: 0, SessionID: id, Kind: ItemToolCall, ToolName: tool,
+			Payload: map[string]any{"call_id": id}, At: at.Add(2 * time.Minute)},
+		{ResponseID: id + "-2", Ordinal: 1, SessionID: id, Kind: ItemToolResult, ToolName: tool,
+			Text: "done", Payload: result, At: at.Add(2*time.Minute + time.Second)},
+	}))
+	s.Require().NoError(into.Calls.Start(s.ctx, &Call{ID: id + "-call", SessionID: id, CustomerID: "app",
+		CallType: "default", CallID: id, StartedAt: at}))
+	s.Require().NoError(into.Calls.Finish(s.ctx, "app", id+"-call", at.Add(5*time.Minute)))
+	s.Require().NoError(insertRequest(s.ctx, into, &Request{Modality: "llm", CustomerID: "app", Provider: "openai",
+		Model: "gpt", StartedAt: at.Add(time.Minute), InputTokens: cost, CostMicros: cost, Success: true}))
+}
+
+// statsOf is every stats and spend page of app's over the two hours from s.base, as read.
+func (s *ShardedStoreSuite) statsOf(read *Store) map[string]any {
+	from, to := s.base, s.base.Add(2*time.Hour)
+	spent, err := read.Spend.Since(s.ctx, "app", from)
+	s.Require().NoError(err)
+	meters, err := read.Spend.Meters(s.ctx, []string{"app"}, from)
+	s.Require().NoError(err)
+	activity, err := read.CustomerActivity(s.ctx, "app", ActivityDaily, from, to)
+	s.Require().NoError(err)
+	for i := range activity {
+		activity[i].Bucket = activity[i].Bucket.UTC()
+	}
+	turns, err := read.CustomerTurns(s.ctx, "app", "", from, to)
+	s.Require().NoError(err)
+	overall, tools, err := read.CustomerToolUsage(s.ctx, "app", "", from, to)
+	s.Require().NoError(err)
+	peak, err := read.CustomerConcurrencyPeak(s.ctx, "app", from, to)
+	s.Require().NoError(err)
+	s.Require().NotNil(peak.At)
+	return map[string]any{"spent": spent, "meters": meters, "activity": activity, "turns": turns,
+		"overall tool use": overall, "tools": tools, "peak": peak.Sessions, "peak at": peak.At.UTC()}
+}
+
+// Defect: a rollup that ships one shard's rows over another's, a reader that reads this shard's
+// rollup alone, or a sum of shards that counts a session, a person or a minute's sessions other
+// than one database of them all would.
+func (s *ShardedStoreSuite) TestTwoShardsRollupsAgreeWithOneDatabaseOfThemAll() {
+	local, err := OpenShards(Options{DSN: s.emptyDatabase("store_local")})
+	s.Require().NoError(err)
+	s.T().Cleanup(func() { s.NoError(local.Close()) })
+	s.Require().NoError(local.Migrate(s.ctx))
+	// a, b and c are open at once from the fifth minute; d in the next hour. jlahey is seen
+	// in both shards.
+	work := []struct {
+		id, user, tool string
+		failed         bool
+		at             time.Duration
+		cost           int64
+		there          bool
+	}{
+		{"a", "jlahey", "lookup_order", false, 0, 100, false},
+		{"b", "randy", "lookup_order", true, 3 * time.Minute, 200, false},
+		{"c", "jlahey", "refund", false, 5 * time.Minute, 400, true},
+		{"d", "bubbles", "lookup_order", false, 70 * time.Minute, 800, true},
+	}
+	for _, w := range work {
+		s.workedIn(local, w.id, w.user, w.tool, w.failed, s.base.Add(w.at), w.cost)
+		shard := s.store
+		if w.there {
+			shard = s.other
+		}
+		s.workedIn(shard, w.id, w.user, w.tool, w.failed, s.base.Add(w.at), w.cost)
+	}
+	now := s.base.Add(2 * time.Hour)
+	s.Require().NoError(s.store.ShipStats(s.ctx, now))
+	s.Require().NoError(s.other.ShipStats(s.ctx, now))
+
+	want := s.statsOf(local)
+	s.Require().EqualValues(int64(1500), want["spent"], "the local answer is the whole workload's")
+	s.Require().EqualValues(int64(3), want["peak"])
+	s.Equal(want, s.statsOf(s.store))
+	s.Equal(want, s.statsOf(s.other), "every shard reads the same copy")
+}
+
 // Defect: every router of a shard ships at once, or one router holds the lock of every shard,
 // leaving the other shards' stats unshipped.
 func (s *ShardedStoreSuite) TestOneRouterOfEachShardShips() {

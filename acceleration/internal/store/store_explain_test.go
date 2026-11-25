@@ -26,10 +26,10 @@ import (
 const seedRows = 100_000
 
 // hotTables are the tables that grow with traffic, which no statement may read in full.
-var hotTables = regexp.MustCompile(`\b(requests|agent_sessions|calls|call_legs|agent_logs|image_jobs|session_homes|call_homes|session_index|call_index)\b`)
+var hotTables = regexp.MustCompile(`\b(requests|agent_sessions|calls|call_legs|agent_logs|image_jobs|session_homes|call_homes|session_index|call_index|shard_spend_hourly|shard_activity_hourly|shard_people_hourly|shard_session_turns_hourly|shard_tool_hourly|shard_tool_sessions_hourly|shard_concurrency_minute)\b`)
 
 // seqScans finds a sequential scan of one of hotTables in a plan.
-var seqScans = regexp.MustCompile(`Seq Scan on (requests|agent_sessions|calls|call_legs|agent_logs|image_jobs|session_homes|call_homes|session_index|call_index)\b`)
+var seqScans = regexp.MustCompile(`Seq Scan on (requests|agent_sessions|calls|call_legs|agent_logs|image_jobs|session_homes|call_homes|session_index|call_index|shard_spend_hourly|shard_activity_hourly|shard_people_hourly|shard_session_turns_hourly|shard_tool_hourly|shard_tool_sessions_hourly|shard_concurrency_minute)\b`)
 
 // seededDatabase fills a database of its own with seedRows of each hot table, once per run of the
 // suite: the suite's databases are emptied before every test, and seeding them for each would
@@ -64,7 +64,9 @@ func (s *StoreSuite) seededDatabase() string {
 		// Statistics read off every row rather than a sample, so the planner breaks a tie
 		// between two indexes the same way every run.
 		_, err := tx.ExecContext(ctx, "SET LOCAL default_statistics_target = 1000; "+
-			"ANALYZE agent_sessions, calls, call_legs, requests, agent_logs, image_jobs, session_homes, call_homes, session_index, call_index")
+			"ANALYZE agent_sessions, calls, call_legs, requests, agent_logs, image_jobs, session_homes, call_homes, session_index, call_index, "+
+			"shard_spend_hourly, shard_activity_hourly, shard_people_hourly, shard_session_turns_hourly, shard_tool_hourly, "+
+			"shard_tool_sessions_hourly, shard_concurrency_minute")
 		return err
 	}))
 	s.seededDSN = dsn
@@ -166,6 +168,44 @@ var seedStatements = []string{
 	// organization's apps sums more than one.
 	`INSERT INTO app_organizations (app_id, organization_id, seen_at)
 	VALUES ('customer-7', 'org-7', ?0), ('customer-107', 'org-7', ?0)`,
+
+	// The rollups each shard ships, a row of each seeded request or session in one of four shards.
+	`INSERT INTO shard_spend_hourly (shard, started_at, dims, customer_id, organization_id, api_key, user_id,
+		usage_categories, tags, modality, provider, model, billable, success, measured, rows, cost_micros, input_tokens,
+		cached_input_tokens, output_tokens, audio_ms, characters, images, duration_ms)
+	SELECT 'shard-' || (id % 4), date_trunc('hour', started_at, 'UTC'), md5(id::text), customer_id, organization_id,
+		api_key, user_id, usage_categories, tags, modality, provider, model, billable, success, true, 1, cost_micros,
+		input_tokens, cached_input_tokens, output_tokens, audio_ms, characters, images, COALESCE(duration_ms, 0)
+	FROM requests WHERE ?0::timestamptz IS NOT NULL AND ?1 > 0`,
+
+	`INSERT INTO shard_activity_hourly (shard, customer_id, bucket, sessions, messages, calls, voice_minutes, phone_minutes)
+	SELECT 'shard-0', customer_id, date_trunc('hour', created_at, 'UTC'), COUNT(*), 3 * COUNT(*), COUNT(*), 10 * COUNT(*), 0
+	FROM agent_sessions WHERE ?0::timestamptz IS NOT NULL AND ?1 > 0 GROUP BY 2, 3`,
+
+	`INSERT INTO shard_people_hourly (shard, customer_id, bucket, user_id)
+	SELECT DISTINCT 'shard-0', customer_id, date_trunc('hour', created_at, 'UTC'), user_id
+	FROM agent_sessions WHERE caller_kind <> 'anonymous' AND ?0::timestamptz IS NOT NULL AND ?1 > 0`,
+
+	`INSERT INTO shard_session_turns_hourly (shard, customer_id, bucket, config_id, session_id, turns)
+	SELECT 'shard-0', customer_id, date_trunc('hour', created_at, 'UTC'), config_id, id, 3
+	FROM agent_sessions WHERE ?0::timestamptz IS NOT NULL AND ?1 > 0`,
+
+	`INSERT INTO shard_tool_hourly (shard, customer_id, bucket, config_id, tool, calls, failed, tokens_total, ms_total,
+		ms_count, p99_ms, offered_at, loading)
+	SELECT DISTINCT ON (customer_id, date_trunc('hour', created_at, 'UTC'), config_id) 'shard-0', customer_id,
+		date_trunc('hour', created_at, 'UTC'), config_id, 'search', 2, 0, 100, 200, 2, 150, created_at, ''
+	FROM agent_sessions WHERE ?0::timestamptz IS NOT NULL AND ?1 > 0`,
+
+	`INSERT INTO shard_tool_sessions_hourly (shard, customer_id, bucket, config_id, tool, session_id, first_at, first_turn,
+		first_before)
+	SELECT 'shard-0', customer_id, date_trunc('hour', created_at, 'UTC'), config_id, 'search', id, created_at, 'turn', 1
+	FROM agent_sessions WHERE ?0::timestamptz IS NOT NULL AND ?1 > 0`,
+
+	`INSERT INTO shard_concurrency_minute (shard, customer_id, minute, sessions)
+	SELECT 'shard-0', customer_id, minute, COUNT(*)
+	FROM agent_sessions, generate_series(date_trunc('minute', created_at),
+		COALESCE(closed_at, created_at + interval '10 minutes'), interval '1 minute') AS minute
+	WHERE ?0::timestamptz IS NOT NULL AND ?1 > 0 GROUP BY 2, 3`,
 }
 
 // explained runs read on a store of the seeded database and answers the plan of each
@@ -856,6 +896,70 @@ func (s *StoreSuite) TestEveryHotTableIsReadByIndex() {
 		}},
 		{name: "Store.ShipStats", index: "requests_started_idx", sharded: true, run: func(ctx context.Context, store *Store) error {
 			return store.ShipStats(ctx, s.base)
+		}},
+		{name: "Requests.Spend shipped", index: "shard_spend_hourly_customer_idx", sharded: true, run: func(ctx context.Context, store *Store) error {
+			_, err := store.Requests.Spend(ctx, "customer-7", "modality", Hourly, since, until, 10, nil, UsageFilter{})
+			return err
+		}},
+		{name: "Requests.TagKeys shipped", index: "shard_spend_hourly_customer_idx", sharded: true, run: func(ctx context.Context, store *Store) error {
+			_, err := store.Requests.TagKeys(ctx, "customer-7", since, until, nil)
+			return err
+		}},
+		// A quarter of the rows are the modality's, so which of the two the sampled statistics
+		// pick is a toss-up; either reads only the window.
+		{name: "Requests.CountByModel shipped", index: "shard_spend_hourly_(modality|started)_idx", sharded: true, run: func(ctx context.Context, store *Store) error {
+			_, err := store.Requests.CountByModel(ctx, "llm", s.base.Add(-7*24*time.Hour))
+			return err
+		}},
+		{name: "Spend.Since shipped", index: "shard_spend_hourly_customer_idx", sharded: true, run: func(ctx context.Context, store *Store) error {
+			_, err := store.Spend.Since(ctx, "customer-7", since)
+			return err
+		}},
+		{name: "Spend.Teams shipped", index: "shard_spend_hourly_customer_idx", sharded: true, run: func(ctx context.Context, store *Store) error {
+			_, err := store.Spend.Teams(ctx, "org-7", []time.Time{since}, s.base.AddDate(0, 0, -1))
+			return err
+		}},
+		{name: "Spend.Subject shipped", index: "shard_spend_hourly_customer_idx", sharded: true, run: func(ctx context.Context, store *Store) error {
+			_, err := store.Spend.Subject(ctx, usage.SubjectRef{OrganizationID: "org-7", Subject: usage.SubjectUser, AppID: "customer-7",
+				UserID: "user-7"}, since, true)
+			return err
+		}},
+		{name: "Spend.Daily shipped", index: "shard_spend_hourly_started_idx", sharded: true, run: func(ctx context.Context, store *Store) error {
+			_, err := store.Spend.Daily(ctx, s.base.AddDate(0, 0, -7), s.base)
+			return err
+		}},
+		{name: "Spend.Meters shipped", index: "shard_spend_hourly_customer_idx", sharded: true, run: func(ctx context.Context, store *Store) error {
+			_, err := store.Spend.Meters(ctx, []string{"customer-7", "customer-8"}, since)
+			return err
+		}},
+		{name: "Buckets.Shipped by tag", index: "shard_spend_hourly_customer_idx", sharded: true, run: func(ctx context.Context, store *Store) error {
+			_, err := store.Buckets.Shipped(ctx, "customer-7", BucketFilter{Modality: "llm", Granularity: Hourly, From: since, To: until,
+				Tags: map[string]string{"project": "project-7"}})
+			return err
+		}},
+		{name: "Store.CustomerActivity shipped", index: "shard_activity_hourly_pkey", sharded: true, run: func(ctx context.Context, store *Store) error {
+			_, err := store.CustomerActivity(ctx, "customer-7", ActivityDaily, since, until)
+			return err
+		}},
+		{name: "Store.CustomerActivity shipped people", index: "shard_people_hourly_pkey", sharded: true, run: func(ctx context.Context, store *Store) error {
+			_, err := store.CustomerActivity(ctx, "customer-7", ActivityDaily, since, until)
+			return err
+		}},
+		{name: "Store.CustomerConcurrencyPeak shipped", index: "shard_concurrency_minute_pkey", sharded: true, run: func(ctx context.Context, store *Store) error {
+			_, err := store.CustomerConcurrencyPeak(ctx, "customer-7", since, until)
+			return err
+		}},
+		{name: "Store.CustomerToolUsage shipped", index: "shard_tool_hourly_pkey", sharded: true, run: func(ctx context.Context, store *Store) error {
+			_, _, err := store.CustomerToolUsage(ctx, "customer-7", "config-7", since, until)
+			return err
+		}},
+		{name: "Store.CustomerToolUsage shipped sessions", index: "shard_tool_sessions_hourly_pkey", sharded: true, run: func(ctx context.Context, store *Store) error {
+			_, _, err := store.CustomerToolUsage(ctx, "customer-7", "", since, until)
+			return err
+		}},
+		{name: "Store.CustomerTurns shipped", index: "shard_session_turns_hourly_pkey", sharded: true, run: func(ctx context.Context, store *Store) error {
+			_, err := store.CustomerTurns(ctx, "customer-7", "config-7", since, until)
+			return err
 		}},
 	}
 	for _, read := range reads {

@@ -806,24 +806,28 @@ func (t dataTable) selectRows(customerID string, secrets []string) (string, []an
 // A number on the customer's own trunk that another customer holds here is not written:
 // *NumbersLeftOutError.
 func (s *Store) ImportRow(ctx context.Context, customerID, table string, row json.RawMessage) error {
+	// A cached row's write outlives ctx, so an import that has ended stops here.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	spec, _ := dataTableByName(table)
 	var stale []string
-	var err error
 	if table == "phone_numbers" {
 		// A number is checked against who else holds it under a lock its write has to keep
 		// (holders), and only a transaction keeps one.
-		err = s.sideOf(spec).RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		return s.sideOf(spec).RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 			return s.importRow(ctx, tx, customerID, table, row, &stale)
 		})
-	} else {
-		err = s.importRow(ctx, s.sideOf(spec), customerID, table, row, &stale)
 	}
-	if err != nil {
-		return err
+	// Most rows of an export have no keys to drop and pay for no transaction.
+	if !readCached(table) {
+		return s.importRow(ctx, s.sideOf(spec), customerID, table, row, &stale)
 	}
-	s.forget(ctx, stale...)
+	err := s.detachedWrite(ctx, func(ctx context.Context, tx bun.Tx) error {
+		return s.importRow(ctx, tx, customerID, table, row, &stale)
+	}, func() []string { return stale })
 	s.Users.forgetKeys(stale)
-	return nil
+	return err
 }
 
 // sideOf is the database a table's rows are written to here: this shard's or the shared one.
@@ -1209,6 +1213,12 @@ func cachedByID(table string) bool {
 	return slices.Contains([]string{"agent_configs", "router_configs", "skills", "voices"}, table)
 }
 
+// readCached is whether a moved table's rows are read through a cache (cachedKeys). Every such
+// table is in the shared database.
+func readCached(table string) bool {
+	return cachedByID(table) || table == "policies" || table == "users"
+}
+
 // cachedRow is a row of a cachedByID table, as relation names it in a write, in the form cachedKeys
 // reads. A voice's carries the providers of its bindings, whose ids are cached under the voice
 // (VoiceBindings.GetReady) and read only while it is not deleted.
@@ -1225,10 +1235,13 @@ func cachedRow(table, relation string) string {
 // policy is cached by its app alone, so any row of it names the same values. A user is held by
 // every replica that saw them (Users.Forget).
 func cachedKeys(customerID, table string, row []byte) []string {
+	if !readCached(table) {
+		return nil
+	}
 	if table == "policies" {
 		return policyKeys(ScopeApp, customerID)
 	}
-	if (!cachedByID(table) && table != "users") || len(row) == 0 {
+	if len(row) == 0 {
 		return nil
 	}
 	// The columns are text, which jsonb_populate_record also fills from a number, so a value is
@@ -2270,7 +2283,7 @@ func (s *Store) applyChanges(ctx context.Context, db *bun.DB, customerID string,
 		return nil
 	}
 	var stale, left []string
-	err := db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+	_, err := s.cachedWrite(ctx, db, func(ctx context.Context, tx bun.Tx) error {
 		if err := lockNumbers(ctx, tx, changes); err != nil {
 			return err
 		}
@@ -2295,12 +2308,11 @@ func (s *Store) applyChanges(ctx context.Context, db *bun.DB, customerID string,
 			}
 		}
 		return nil
-	})
+	}, func() []string { return stale }, func() bool { return len(stale) > 0 })
+	s.Users.forgetKeys(stale)
 	if err != nil {
 		return err
 	}
-	s.forget(ctx, stale...)
-	s.Users.forgetKeys(stale)
 	if len(left) > 0 {
 		return stack.Wrap(&NumbersLeftOutError{Numbers: left})
 	}

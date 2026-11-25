@@ -69,6 +69,7 @@ TABLE agent_response_items
     CONSTRAINT agent_response_items_response_id_fkey FOREIGN KEY (response_id) REFERENCES agent_responses(id) ON DELETE CASCADE
     CREATE INDEX agent_response_items_redact_idx ON public.agent_response_items USING btree (redact_at) WHERE (redact_at IS NOT NULL)
     CREATE INDEX agent_response_items_session_idx ON public.agent_response_items USING btree (session_id, at, response_id, ordinal)
+    CREATE INDEX agent_response_items_tool_result_idx ON public.agent_response_items USING btree (at) WHERE (kind = 'tool_result'::text)
 
 TABLE agent_responses
     created_at timestamp with time zone NOT NULL DEFAULT now()
@@ -84,6 +85,7 @@ TABLE agent_responses
     status text NOT NULL DEFAULT 'running'::text
     CONSTRAINT agent_responses_pkey PRIMARY KEY (id)
     CONSTRAINT agent_responses_session_id_fkey FOREIGN KEY (session_id) REFERENCES agent_sessions(id) ON DELETE CASCADE
+    CREATE INDEX agent_responses_created_idx ON public.agent_responses USING btree (created_at)
     CREATE INDEX agent_responses_parent_idx ON public.agent_responses USING btree (session_id, parent_response_id)
     CREATE INDEX agent_responses_session_idx ON public.agent_responses USING btree (session_id, created_at, id)
 
@@ -140,11 +142,14 @@ TABLE agent_sessions
     CREATE INDEX agent_sessions_agent_id_idx ON public.agent_sessions USING btree (customer_id, agent_id, updated_at DESC, id DESC)
     CREATE INDEX agent_sessions_agent_idx ON public.agent_sessions USING btree (customer_id, agent_name, updated_at DESC, id DESC)
     CREATE INDEX agent_sessions_changed_idx ON public.agent_sessions USING btree (changed_at, customer_id, id)
+    CREATE INDEX agent_sessions_closed_idx ON public.agent_sessions USING btree (closed_at)
     CREATE INDEX agent_sessions_conversation_idx ON public.agent_sessions USING btree (customer_id, conversation_id, created_at DESC)
+    CREATE INDEX agent_sessions_created_idx ON public.agent_sessions USING btree (created_at)
     CREATE INDEX agent_sessions_custom_idx ON public.agent_sessions USING gin (custom jsonb_path_ops)
     CREATE INDEX agent_sessions_customer_idx ON public.agent_sessions USING btree (customer_id, created_at DESC, id DESC)
     CREATE INDEX agent_sessions_last_message_idx ON public.agent_sessions USING btree (customer_id, COALESCE(last_response_at, created_at) DESC, id DESC)
     CREATE INDEX agent_sessions_modality_idx ON public.agent_sessions USING btree (customer_id, modality, updated_at DESC, id DESC)
+    CREATE INDEX agent_sessions_open_idx ON public.agent_sessions USING btree (created_at) WHERE (closed_at IS NULL)
     CREATE INDEX agent_sessions_pinned_idx ON public.agent_sessions USING btree (customer_id, ((pinned_at IS NOT NULL)) DESC, COALESCE(last_response_at, created_at) DESC, id DESC)
     CREATE INDEX agent_sessions_project_idx ON public.agent_sessions USING btree (customer_id, project, updated_at DESC, id DESC)
     CREATE INDEX agent_sessions_project_last_message_idx ON public.agent_sessions USING btree (customer_id, project, COALESCE(last_response_at, created_at) DESC, id DESC)
@@ -298,6 +303,7 @@ TABLE calls
     CREATE INDEX calls_customer_campaign_idx ON public.calls USING btree (customer_id, campaign_id, started_at DESC) WHERE (campaign_id IS NOT NULL)
     CREATE INDEX calls_customer_idx ON public.calls USING btree (customer_id, started_at DESC)
     CREATE INDEX calls_session_started_idx ON public.calls USING btree (session_id, started_at DESC) WHERE (session_id IS NOT NULL)
+    CREATE INDEX calls_started_idx ON public.calls USING btree (started_at)
     CREATE INDEX calls_tags_idx ON public.calls USING gin (tags)
     CREATE TRIGGER calls_changed BEFORE UPDATE ON public.calls FOR EACH ROW EXECUTE FUNCTION mark_changed()
 

@@ -1410,6 +1410,9 @@ redis:
   addr: global:6379
   shard:
     addr: usw:6379
+usage:
+  url: http://usage:8070
+  token: ingest
 `), 0o600))
 
 	config, _, err := Load(path)
@@ -1427,6 +1430,8 @@ func (s *ConfigSuite) TestAShardIsReadFromTheEnvironment() {
 	s.T().Setenv("ROUTER_POSTGRES_SHARD_DSN", "postgres://usw/router")
 	s.T().Setenv("ROUTER_POSTGRES_SHARDS", "us-east4=postgres://use/router, us-west1=postgres://usw/router")
 	s.T().Setenv("ROUTER_REDIS_SHARD_ADDR", "usw:6379")
+	s.T().Setenv("ROUTER_USAGE_URL", "http://usage:8070")
+	s.T().Setenv("ROUTER_USAGE_TOKEN", "ingest")
 
 	config, _, err := Load("")
 	s.Require().NoError(err)
@@ -1687,6 +1692,16 @@ func (s *ConfigSuite) TestShardsListingThisOneElsewhereAreRefused() {
 
 	_, _, err := Load("")
 	s.ErrorContains(err, "another DSN")
+}
+
+// No shard reads another's requests, so only the usage service sees a customer's spend whole.
+func (s *ConfigSuite) TestShardsWithoutTheUsageServiceAreRefused() {
+	s.T().Setenv("ROUTER_SHARD", "us-west1")
+	s.T().Setenv("ROUTER_POSTGRES_SHARD_DSN", "postgres://usw/router")
+	s.T().Setenv("ROUTER_POSTGRES_SHARDS", "us-west1=postgres://usw/router")
+
+	_, _, err := Load("")
+	s.ErrorContains(err, "set usage.url")
 }
 
 func (s *ConfigSuite) TestMetricsAreNotServedUnlessAnAddressIsSet() {

@@ -1248,6 +1248,10 @@ func (c Config) validateShard() error {
 	if own != c.Postgres.ShardDSN {
 		return fmt.Errorf("config: postgres.shards lists shard %q at another DSN than postgres.shard_dsn", c.Shard)
 	}
+	if c.Usage.URL == "" {
+		return errors.New("config: a deployment of shards counts spend against limits in the usage service, " +
+			"since no shard reads another's requests: set usage.url (ROUTER_USAGE_URL)")
+	}
 	return nil
 }
 

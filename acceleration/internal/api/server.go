@@ -2006,9 +2006,8 @@ func (s *Server) getStats(ctx context.Context, request *getStatsRequest) (*getSt
 	}
 
 	granularity := granularityOf(request.Granularity.ptr())
-	// A rollup keeps no request's labels, so a label filter reads the requests of every shard.
 	read := s.store.Buckets.Select
-	if s.store.StatsShipped() && len(tags) == 0 {
+	if s.store.StatsShipped() {
 		read = s.store.Buckets.Shipped
 	}
 	buckets, err := read(ctx, customerID, store.BucketFilter{

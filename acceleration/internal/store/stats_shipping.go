@@ -33,10 +33,10 @@ const (
 	statsShipBatch = 1000
 )
 
-// StatsShipped reports whether the stats pages read the rollups each shard ships to the shared
-// database (ShipStats) rather than the shards: with other shards to read, a page would read
-// every one, and fail while any is down.
-func (s *Store) StatsShipped() bool { return len(s.peers) > 0 }
+// StatsShipped reports whether the stats, spend and activity pages read the rollups each shard
+// ships to the shared database (ShipStats) rather than this shard: a deployment of named
+// shards keeps each one's requests and sessions in it alone.
+func (s *Store) StatsShipped() bool { return s.homed }
 
 // StatsShipLock makes one router of this shard the one that ships its stats.
 func (s *Store) StatsShipLock() *ShipLock {
@@ -169,6 +169,11 @@ func (s *Store) shipStatsOf(ctx context.Context, shard string, from, to time.Tim
 		query := fmt.Sprintf("SELECT %s FROM %s WHERE %s",
 			strings.Join(slices.Concat(copied.key, copied.values), ", "), table, wholeBuckets(Hourly, "bucket"))
 		if err := s.shipRows(ctx, shard, copied, query, from, to); err != nil {
+			return err
+		}
+	}
+	for _, table := range replacedRollups {
+		if err := s.replaceRows(ctx, shard, table, from, to); err != nil {
 			return err
 		}
 	}

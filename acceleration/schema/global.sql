@@ -1299,6 +1299,26 @@ TABLE session_index
     CREATE INDEX session_index_user_idx ON public.session_index USING btree (customer_id, user_id, updated_at DESC, id DESC)
     CREATE INDEX session_index_user_last_message_idx ON public.session_index USING btree (customer_id, user_id, COALESCE(last_response_at, created_at) DESC, id DESC)
 
+TABLE shard_activity_hourly
+    bucket timestamp with time zone NOT NULL
+    calls bigint NOT NULL
+    customer_id text NOT NULL
+    messages bigint NOT NULL
+    phone_minutes double precision NOT NULL
+    sessions bigint NOT NULL
+    shard text NOT NULL
+    voice_minutes double precision NOT NULL
+    CONSTRAINT shard_activity_hourly_pkey PRIMARY KEY (customer_id, bucket, shard)
+    CREATE INDEX shard_activity_hourly_shard_idx ON public.shard_activity_hourly USING btree (shard, bucket)
+
+TABLE shard_concurrency_minute
+    customer_id text NOT NULL
+    minute timestamp with time zone NOT NULL
+    sessions bigint NOT NULL
+    shard text NOT NULL
+    CONSTRAINT shard_concurrency_minute_pkey PRIMARY KEY (customer_id, minute, shard)
+    CREATE INDEX shard_concurrency_minute_shard_idx ON public.shard_concurrency_minute USING btree (shard, minute)
+
 TABLE shard_index_shipped
     kind text NOT NULL
     shard text NOT NULL
@@ -1311,6 +1331,54 @@ TABLE shard_numbers
     number integer NOT NULL
     CONSTRAINT shard_numbers_number_key UNIQUE (number)
     CONSTRAINT shard_numbers_pkey PRIMARY KEY (name)
+
+TABLE shard_people_hourly
+    bucket timestamp with time zone NOT NULL
+    customer_id text NOT NULL
+    shard text NOT NULL
+    user_id text NOT NULL
+    CONSTRAINT shard_people_hourly_pkey PRIMARY KEY (customer_id, bucket, user_id, shard)
+    CREATE INDEX shard_people_hourly_shard_idx ON public.shard_people_hourly USING btree (shard, bucket)
+
+TABLE shard_session_turns_hourly
+    bucket timestamp with time zone NOT NULL
+    config_id text NOT NULL
+    customer_id text NOT NULL
+    session_id text NOT NULL
+    shard text NOT NULL
+    turns bigint NOT NULL
+    CONSTRAINT shard_session_turns_hourly_pkey PRIMARY KEY (customer_id, bucket, config_id, session_id, shard)
+    CREATE INDEX shard_session_turns_hourly_shard_idx ON public.shard_session_turns_hourly USING btree (shard, bucket)
+
+TABLE shard_spend_hourly
+    api_key text NOT NULL
+    audio_ms bigint NOT NULL
+    billable boolean NOT NULL
+    cached_input_tokens bigint NOT NULL
+    characters bigint NOT NULL
+    cost_micros bigint NOT NULL
+    customer_id text NOT NULL
+    dims text NOT NULL
+    duration_ms double precision NOT NULL
+    images bigint NOT NULL
+    input_tokens bigint NOT NULL
+    measured boolean NOT NULL
+    modality text NOT NULL
+    model text NOT NULL
+    organization_id text NOT NULL
+    output_tokens bigint NOT NULL
+    provider text NOT NULL
+    rows bigint NOT NULL
+    shard text NOT NULL
+    started_at timestamp with time zone NOT NULL
+    success boolean NOT NULL
+    tags jsonb NOT NULL
+    usage_categories text[] NOT NULL
+    user_id text NOT NULL
+    CONSTRAINT shard_spend_hourly_pkey PRIMARY KEY (shard, started_at, dims)
+    CREATE INDEX shard_spend_hourly_customer_idx ON public.shard_spend_hourly USING btree (customer_id, started_at)
+    CREATE INDEX shard_spend_hourly_modality_idx ON public.shard_spend_hourly USING btree (modality, started_at)
+    CREATE INDEX shard_spend_hourly_started_idx ON public.shard_spend_hourly USING btree (started_at)
 
 TABLE shard_stats_daily
     audio_ms_total bigint NOT NULL
@@ -1401,6 +1469,38 @@ TABLE shard_stats_tags_hourly
     tag_value text NOT NULL
     uptime double precision DEFAULT (((request_count - error_count))::double precision / (NULLIF(request_count, 0))::double precision)
     CONSTRAINT shard_stats_tags_hourly_pkey PRIMARY KEY (modality, customer_id, tag_key, bucket, tag_value, shard)
+
+TABLE shard_tool_hourly
+    bucket timestamp with time zone NOT NULL
+    calls bigint NOT NULL
+    config_id text NOT NULL
+    customer_id text NOT NULL
+    definition_tokens bigint
+    failed bigint NOT NULL
+    loading text NOT NULL
+    ms_count bigint NOT NULL
+    ms_total double precision NOT NULL
+    offered_at timestamp with time zone
+    p99_ms double precision
+    shard text NOT NULL
+    summary_tokens bigint
+    tokens_total double precision NOT NULL
+    tool text NOT NULL
+    CONSTRAINT shard_tool_hourly_pkey PRIMARY KEY (customer_id, bucket, config_id, tool, shard)
+    CREATE INDEX shard_tool_hourly_shard_idx ON public.shard_tool_hourly USING btree (shard, bucket)
+
+TABLE shard_tool_sessions_hourly
+    bucket timestamp with time zone NOT NULL
+    config_id text NOT NULL
+    customer_id text NOT NULL
+    first_at timestamp with time zone
+    first_before bigint
+    first_turn text
+    session_id text NOT NULL
+    shard text NOT NULL
+    tool text NOT NULL
+    CONSTRAINT shard_tool_sessions_hourly_pkey PRIMARY KEY (customer_id, bucket, config_id, tool, session_id, shard)
+    CREATE INDEX shard_tool_sessions_hourly_shard_idx ON public.shard_tool_sessions_hourly USING btree (shard, bucket)
 
 TABLE shard_turn_latency_hourly
     agent_id text NOT NULL

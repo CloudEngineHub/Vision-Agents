@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -43,6 +44,9 @@ type indexed struct {
 	alias string
 	// columns are the copy's, but for the shard and what the copy generates itself.
 	columns []string
+	// jsonNotNull are the jsonb columns that are NOT NULL, which can still hold a JSON null:
+	// jsonb_populate_recordset reads that as SQL NULL.
+	jsonNotNull []string
 }
 
 var (
@@ -53,13 +57,13 @@ var (
 		"resume_history", "floor_control", "tool_timeout_ms", "caller_tools", "state", "modality", "created_at",
 		"updated_at", "opened_at", "closed_at", "end_reason", "last_response_at", "pinned_at", "review_score",
 		"changed_at",
-	}}
+	}, jsonNotNull: []string{"custom", "model_overwrites", "connector_selections", "resume_history"}}
 	indexedCalls = indexed{kind: "calls", table: "calls", index: "call_index", alias: "c", columns: []string{
 		"id", "session_id", "customer_id", "stream_app_pk", "call_type", "call_id", "agent_id", "conversation_id",
 		"agent_user_id", "campaign_id", "contact_id", "from_number", "to_number", "direction", "started_at",
 		"ended_at", "stt", "tts", "llm", "subagent", "sts", "voice", "instructions", "skills", "summary",
 		"review_score", "review_notes", "tags", "changed_at",
-	}}
+	}, jsonNotNull: []string{"tags"}}
 )
 
 // shippedRow is what a ship reads of each row besides the row itself.
@@ -92,14 +96,19 @@ func (s *Store) shipIndexed(ctx context.Context, table indexed) error {
 	}
 	columns := strings.Join(table.columns, ", ")
 	set := make([]string, 0, len(table.columns))
+	selected := make([]string, 0, len(table.columns))
 	for _, column := range table.columns {
 		set = append(set, column+" = EXCLUDED."+column)
+		if slices.Contains(table.jsonNotNull, column) {
+			column = "COALESCE(" + column + ", 'null'::jsonb)"
+		}
+		selected = append(selected, column)
 	}
 	// A row is replaced only by one that changed later: two ships overlapping write the newest.
 	upsert := fmt.Sprintf(`INSERT INTO %[1]s (shard, %[2]s)
-SELECT ?, %[2]s FROM jsonb_populate_recordset(NULL::%[1]s, ?::jsonb)
-ON CONFLICT (customer_id, id) DO UPDATE SET shard = EXCLUDED.shard, %[3]s
-WHERE %[1]s.changed_at <= EXCLUDED.changed_at`, table.index, columns, strings.Join(set, ", "))
+SELECT ?, %[3]s FROM jsonb_populate_recordset(NULL::%[1]s, ?::jsonb)
+ON CONFLICT (customer_id, id) DO UPDATE SET shard = EXCLUDED.shard, %[4]s
+WHERE %[1]s.changed_at <= EXCLUDED.changed_at`, table.index, columns, strings.Join(selected, ", "), strings.Join(set, ", "))
 
 	var after *shippedRow
 	for {

@@ -1295,7 +1295,7 @@ func sessionIDs(sessions []AgentSession) []string {
 // queryBudget is one repository call and the statements it may send.
 type queryBudget struct {
 	name string
-	// fixed statements are sent once, and perShard ones to every shard the store reads.
+	// fixed statements are sent once, and perShard ones to this shard.
 	fixed, perShard int
 	run             func() error
 }
@@ -1309,11 +1309,20 @@ func (s *StoreSuite) homeWrites() int {
 	return 0
 }
 
+// indexReads is the statements a list sends to the shared copy of every shard's rows besides
+// this shard's own: one in a deployment with shards.
+func (s *StoreSuite) indexReads() int {
+	if s.store.Indexed() {
+		return 1
+	}
+	return 0
+}
+
 // withinQueryBudgets runs each call in turn, checking it succeeds in the statements it is allowed.
 func (s *StoreSuite) withinQueryBudgets(budgets []queryBudget) {
 	for _, one := range budgets {
 		var err error
-		s.Equal(one.fixed+one.perShard*len(s.store.shards()), s.countQueries(func() { err = one.run() }), one.name)
+		s.Equal(one.fixed+one.perShard, s.countQueries(func() { err = one.run() }), one.name)
 		s.Require().NoError(err, one.name)
 	}
 }
@@ -1352,8 +1361,10 @@ func (s *StoreSuite) TestSessionQueryBudgets() {
 			_, _, err := s.store.Sessions.ConversationPin(s.ctx, "app", "conversation")
 			return err
 		}},
-		{"Select", 0, 1, func() error { return pages(s.store.Sessions.Select(s.ctx, "app", SessionFilter{Limit: 10})) }},
-		{"Search", 0, 1, func() error { return pages(s.store.Sessions.Search(s.ctx, "app", "docs", SessionFilter{Limit: 10})) }},
+		{"Select", s.indexReads(), 1, func() error { return pages(s.store.Sessions.Select(s.ctx, "app", SessionFilter{Limit: 10})) }},
+		{"Search", s.indexReads(), 1, func() error {
+			return pages(s.store.Sessions.Search(s.ctx, "app", "docs", SessionFilter{Limit: 10}))
+		}},
 		{"Pin", 1, 0, func() error { _, err := s.store.Sessions.Pin(s.ctx, "app", row.ID, true, at); return err }},
 		{"Endings", 1, 0, func() error { _, err := s.store.Sessions.Endings(s.ctx, []string{"app"}, at); return err }},
 		{"Latest", 1, 0, func() error {

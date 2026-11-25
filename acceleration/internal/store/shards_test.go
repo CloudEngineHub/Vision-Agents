@@ -4,7 +4,6 @@ package store
 
 import (
 	"encoding/json"
-	"fmt"
 	"time"
 )
 
@@ -93,27 +92,6 @@ func (s *ShardedStoreSuite) TestARequestItsCallerCancelledIsLoggedAsNoError() {
 	s.EqualValues(4, logged.Details["output_tokens"], "what it generated is still there")
 }
 
-func (s *ShardedStoreSuite) TestASessionHereIsFoundWhileAnotherShardIsDown() {
-	s.opened("chat", "app", s.base, nil)
-
-	found, err := s.withAShardDown(s.shardDSN, s.other.shardDSN).Sessions.Get(s.ctx, "app", "chat")
-	s.Require().NoError(err, "a shard that does not hold the session failed its read")
-	s.Equal("chat", found.ID)
-}
-
-// withAShardDown is a router of the shard own that reads the shards up and one more, which is
-// down: nothing listens on port 1.
-func (s *ShardedStoreSuite) withAShardDown(own string, up ...string) *Store {
-	shards := map[string]string{"own": own, "down": "postgres://postgres:postgres@127.0.0.1:1/down?sslmode=disable"}
-	for i, dsn := range up {
-		shards[fmt.Sprintf("up-%d", i)] = dsn
-	}
-	router, err := OpenShards(Options{DSN: s.dsn, ShardDSN: own, Shards: shards})
-	s.Require().NoError(err)
-	s.T().Cleanup(func() { s.NoError(router.Close()) })
-	return router
-}
-
 func (s *ShardedStoreSuite) TestSessionsOpenInTwoShardsAtOnceAreOnePeak() {
 	s.opened("here", "app", s.base, nil)
 	s.Require().NoError(s.store.Sessions.Close(s.ctx, "app", "here", s.base, s.base.Add(10*time.Minute), ""))
@@ -130,7 +108,8 @@ func (s *ShardedStoreSuite) TestSessionsOpenInTwoShardsAtOnceAreOnePeak() {
 	s.True(peak.At.Equal(s.base.Add(5 * time.Minute)))
 }
 
-func (s *ShardedStoreSuite) TestAnExportOfTwoShardsFoldsTheirRollups() {
+// Defect: an export opens the other shard's database, or folds its rows into this one's.
+func (s *ShardedStoreSuite) TestAnExportCarriesThisShardsRowsAlone() {
 	latency := 100.0
 	s.Require().NoError(insertRequest(s.ctx, s.store, &Request{Modality: "stt", CustomerID: "app", Provider: "deepgram", Model: "flux", StartedAt: s.base, AudioMs: 1000, LatencyMs: &latency, Success: true}))
 	slower := 300.0
@@ -154,9 +133,9 @@ func (s *ShardedStoreSuite) TestAnExportOfTwoShardsFoldsTheirRollups() {
 		return nil
 	})
 	s.Require().NoError(err)
-	s.Equal(2, requests, "every shard's requests")
-	s.Require().Len(hours, 1, "one row for the hour both shards counted")
-	s.EqualValues(1500, hours[0]["audio_ms_total"])
-	s.EqualValues(2, hours[0]["request_count"])
-	s.EqualValues(200, hours[0]["latency_p50_ms"])
+	s.Equal(1, requests, "this shard's request")
+	s.Require().Len(hours, 1)
+	s.EqualValues(1000, hours[0]["audio_ms_total"])
+	s.EqualValues(1, hours[0]["request_count"])
+	s.EqualValues(100, hours[0]["latency_p50_ms"])
 }

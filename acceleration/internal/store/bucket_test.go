@@ -528,7 +528,7 @@ func (s *StoreSuite) TestBucketQueryBudgets() {
 		_, err := s.store.Buckets.Rollup(s.ctx, Hourly, s.base.Add(30*time.Minute), s.base.Add(3*time.Hour))
 		s.Require().NoError(err)
 	}))
-	s.Equal(len(s.store.shards()), s.countQueries(func() {
+	s.Equal(1, s.countQueries(func() {
 		buckets, err := s.store.Buckets.Select(s.ctx, "acme", BucketFilter{Modality: "stt", Granularity: Hourly, From: s.base, To: s.base.Add(time.Hour)})
 		s.Require().NoError(err)
 		s.Len(buckets, 1)

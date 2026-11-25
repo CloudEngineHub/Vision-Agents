@@ -208,7 +208,7 @@ func (s *StoreSuite) TestCallQueryBudgets() {
 		{"Finish", 1, 0, func() error { return s.store.Calls.Finish(s.ctx, call.CustomerID, call.ID, end) }},
 		{"Review", 2, 0, func() error { return s.store.Calls.Review(s.ctx, "app", call.ID, "Fine.", &score, "") }},
 		{"Get", 1, 0, func() error { _, err := s.store.Calls.Get(s.ctx, "app", call.ID); return err }},
-		{"Latest", 0, 1, func() error {
+		{"Latest", s.indexReads(), 1, func() error {
 			latest, err := s.store.Calls.Latest(s.ctx, "app", []string{"called", "nobody"})
 			s.Equal(call.ID, latest["called"].ID)
 			return err
@@ -218,7 +218,7 @@ func (s *StoreSuite) TestCallQueryBudgets() {
 			s.Equal("call-59", voiced.ID)
 			return err
 		}},
-		{"Select", 0, 1, func() error {
+		{"Select", s.indexReads(), 1, func() error {
 			listed, err := s.store.Calls.Select(s.ctx, "app", CallFilter{SessionID: "called"})
 			s.Len(listed, defaultCallLimit)
 			return err

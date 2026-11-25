@@ -2014,11 +2014,8 @@ func (s *RouterSuite) otherNodeServingFrom(served *store.Store, workers *dispatc
 	return s.otherNodeHolding(workers, keyring, logger, func(o *Options) { o.Store = served })
 }
 
-// unreachableShardDSN is a DSN no Postgres answers on.
-const unreachableShardDSN = "postgres://postgres:postgres@127.0.0.1:1/down?sslmode=disable&dial_timeout=1s"
-
 // onAShardDown is the app's client on a node of the suite's databases, shard "here", whose
-// other shard, "there", does not answer; and the store that node reads.
+// other shard, "there", has no node up; and the store that node reads.
 func (s *RouterSuite) onAShardDown() (*testClient, *store.Store) {
 	shared := testDatabase(s.T(), os.Getenv("ROUTER_POSTGRES_DSN"))
 	if s.database != "" {
@@ -2028,8 +2025,7 @@ func (s *RouterSuite) onAShardDown() (*testClient, *store.Store) {
 	if shardDSN := os.Getenv("ROUTER_POSTGRES_SHARD_DSN"); shardDSN != "" {
 		own = testDatabase(s.T(), shardDSN)
 	}
-	served, err := store.OpenShards(store.Options{DSN: shared, ShardDSN: own, Shard: "here",
-		Shards: map[string]string{"here": own, "there": unreachableShardDSN}})
+	served, err := store.OpenShards(store.Options{DSN: shared, ShardDSN: own, Shard: "here", Shards: []string{"here", "there"}})
 	s.Require().NoError(err)
 	s.T().Cleanup(func() { s.NoError(served.Close()) })
 	other, _, _ := s.otherNodeServingFrom(served, nil, s.sealer, slog.New(slog.DiscardHandler))

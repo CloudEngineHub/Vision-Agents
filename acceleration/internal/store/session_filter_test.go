@@ -3,12 +3,8 @@
 package store
 
 import (
-	"context"
-	"database/sql"
 	"slices"
 	"time"
-
-	"github.com/uptrace/bun"
 )
 
 // after is the cursor that starts the page after a session.
@@ -22,11 +18,11 @@ func (s *StoreSuite) lastAnswered(id string, at time.Time) {
 	s.changed(id, "last_response_at = ?", at)
 }
 
-// changed sets one column of a session's row, in whichever shard holds it.
+// changed sets one column of a session's row in this shard.
 func (s *StoreSuite) changed(id, set string, value any) {
-	affected, err := onEveryShard(s.ctx, s.store, func(ctx context.Context, db bun.IDB) (sql.Result, error) {
-		return db.NewUpdate().Model((*AgentSession)(nil)).Set(set, value).Where("id = ?", id).Exec(ctx)
-	})
+	result, err := s.store.shard.NewUpdate().Model((*AgentSession)(nil)).Set(set, value).Where("id = ?", id).Exec(s.ctx)
+	s.Require().NoError(err)
+	affected, err := result.RowsAffected()
 	s.Require().NoError(err)
 	s.Require().Positive(affected, "no session %s to change", id)
 }

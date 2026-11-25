@@ -62,7 +62,7 @@ func (s *StoreSuite) countQueries(run func()) int {
 
 // countEveryQuery hooks the suite's counter into every database the store holds.
 func (s *StoreSuite) countEveryQuery() {
-	databases := append([]*bun.DB{s.store.global, s.store.locks}, s.store.peers...)
+	databases := []*bun.DB{s.store.global, s.store.locks}
 	if s.store.Sharded() {
 		databases = append(databases, s.store.shard)
 	}
@@ -92,7 +92,7 @@ func (c *statementsOf) AfterQuery(_ context.Context, event *bun.QueryEvent) {
 // store holds: how many batches a batched write took.
 func (s *StoreSuite) statementsLike(prefix string, run func()) int {
 	counter := &statementsOf{prefix: prefix}
-	databases := append([]*bun.DB{s.store.global}, s.store.peers...)
+	databases := []*bun.DB{s.store.global}
 	if s.store.Sharded() {
 		databases = append(databases, s.store.shard)
 	}

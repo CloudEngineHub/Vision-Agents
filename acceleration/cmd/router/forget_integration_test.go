@@ -77,10 +77,10 @@ func (s *ForgetUserSuite) SetupSuite() {
 func (s *ForgetUserSuite) SetupTest() {
 	shared := s.emptyDatabase("forget")
 	here, there := s.emptyDatabase("forget_here"), s.emptyDatabase("forget_there")
-	shards := map[string]string{"here": here, "there": there}
+	names := []string{"here", "there"}
 	s.shards = nil
-	for _, shard := range []string{here, there} {
-		router, err := store.OpenShards(store.Options{DSN: shared, ShardDSN: shard, Shards: shards})
+	for i, shard := range []string{here, there} {
+		router, err := store.OpenShards(store.Options{DSN: shared, ShardDSN: shard, Shard: names[i], Shards: names})
 		s.Require().NoError(err)
 		s.Require().NoError(router.Migrate(s.ctx))
 		s.T().Cleanup(func() { router.Close() })
@@ -95,7 +95,8 @@ func (s *ForgetUserSuite) SetupTest() {
 	s.keys = nil
 
 	s.settings = config.Defaults()
-	s.settings.Postgres = config.Postgres{DSN: shared, ShardDSN: here, Shards: shards}
+	s.settings.Shard, s.settings.Shards = "here", names
+	s.settings.Postgres = config.Postgres{DSN: shared, ShardDSN: here}
 	s.settings.Redis.Addr = os.Getenv("ROUTER_REDIS_ADDR")
 	s.settings.Usage = config.Usage{
 		URL: s.service.URL, Token: s.service.Token, ManageKey: s.service.ManageKey, RedisURL: usagetest.RedisURL(s.T()),
@@ -505,7 +506,7 @@ func (s *ForgetUserSuite) TestForgettingAUserClearsTheirCountersPolicyAndLimits(
 
 func (s *ForgetUserSuite) TestForgettingAUserDropsTheirPolicyARouterCached() {
 	router, err := store.OpenShards(store.Options{
-		DSN: s.settings.Postgres.DSN, ShardDSN: s.settings.Postgres.ShardDSN, Shards: s.settings.Postgres.Shards,
+		DSN: s.settings.Postgres.DSN, ShardDSN: s.settings.Postgres.ShardDSN, Shard: s.settings.Shard, Shards: s.settings.Shards,
 		Redis: store.Redis{Address: s.settings.Redis.Addr},
 	})
 	s.Require().NoError(err)

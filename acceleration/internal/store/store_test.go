@@ -60,7 +60,9 @@ func TestStoreSuite(t *testing.T) {
 }
 
 // ShardedStoreSuite runs every store test again with the shared tables in one database, this
-// shard's in another, and a second shard beside it, as a hosted deployment keeps them.
+// shard's in another, and a second shard beside it, as a hosted deployment keeps them. Neither
+// shard opens the other's database: what one writes reaches the other only through what it
+// ships to the shared one (ShipIndex, ShipStats) and the jobs it runs (ShardJobs).
 type ShardedStoreSuite struct {
 	StoreSuite
 	// other is a router of the second shard: the same shared database, the other shard's own.
@@ -90,14 +92,14 @@ func (s *ShardedStoreSuite) SetupSuite() {
 	shard, peer := s.emptyDatabase("store_shard"), s.emptyDatabase("store_peer")
 	s.shardDSN = shard
 
-	shards := map[string]string{"here": shard, "there": peer}
-	store, err := OpenShards(Options{DSN: s.dsn, ShardDSN: shard, Shards: shards, Redis: s.redis(), redisHook: &s.roundTrips})
+	shards := []string{"here", "there"}
+	store, err := OpenShards(Options{DSN: s.dsn, ShardDSN: shard, Shard: "here", Shards: shards, Redis: s.redis(), redisHook: &s.roundTrips})
 	s.Require().NoError(err)
 	s.store = store
 	s.Require().NoError(store.Ping(s.ctx))
 	s.Require().NoError(store.Migrate(s.ctx))
 	s.countEveryQuery()
-	s.other, err = OpenShards(Options{DSN: s.dsn, ShardDSN: peer, Shards: shards, Redis: s.redis()})
+	s.other, err = OpenShards(Options{DSN: s.dsn, ShardDSN: peer, Shard: "there", Shards: shards, Redis: s.redis()})
 	s.Require().NoError(err)
 	s.Require().NoError(s.other.Migrate(s.ctx))
 	s.base = time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
@@ -177,14 +179,16 @@ func (s *StoreSuite) emptyTables(db bun.IDB) {
 // SetupTest empties the tables one time in each database, and the store's keys in Redis. With
 // one database, the shard database and the shared database are the same database.
 func (s *StoreSuite) SetupTest() {
-	databases := s.store.shards()
+	s.emptyTables(s.store.shard)
 	if s.store.Sharded() {
-		databases = append(databases, s.store.global)
-	}
-	for _, db := range databases {
-		s.emptyTables(db)
+		s.emptyTables(s.store.global)
 	}
 	s.forgetRedis()
+}
+
+func (s *ShardedStoreSuite) SetupTest() {
+	s.StoreSuite.SetupTest()
+	s.emptyTables(s.other.shard)
 }
 
 func (s *StoreSuite) TestMigrateIsIdempotent() {

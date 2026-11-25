@@ -10,22 +10,11 @@ import (
 	"time"
 )
 
-// unreachableShard is a DSN no Postgres answers on.
-const unreachableShard = "postgres://postgres:postgres@127.0.0.1:1/down?sslmode=disable&dial_timeout=1s"
-
 // requestIn stores a request of app's in the shard of into.
 func (s *ShardedStoreSuite) requestIn(into *Store, app string, at time.Time, audioMs int64, tags map[string]string) {
 	latency := 100.0
 	s.Require().NoError(insertRequest(s.ctx, into, &Request{Modality: "stt", CustomerID: app, Provider: "deepgram",
 		Model: "flux-general-en", StartedAt: at, AudioMs: audioMs, LatencyMs: &latency, Success: true, Tags: tags}))
-}
-
-// withTheOtherShardDown is a router of this shard whose other shard does not answer.
-func (s *ShardedStoreSuite) withTheOtherShardDown() *Store {
-	down, err := OpenShards(Options{DSN: s.dsn, ShardDSN: s.shardDSN, Shards: map[string]string{"here": s.shardDSN, "there": unreachableShard}})
-	s.Require().NoError(err)
-	s.T().Cleanup(func() { s.NoError(down.Close()) })
-	return down
 }
 
 // shipped is what the shared database holds of every shard's stats, a row per line in key order.
@@ -146,9 +135,9 @@ func (s *ShardedStoreSuite) TestAShardThatStoppedShippingSendsTheHoursSince() {
 	s.EqualValues(1000, buckets[0].AudioMsTotal)
 }
 
-// Defect: the stats read every shard rather than what they shipped, so one shard being down
-// fails everybody's stats; or they read only this shard's rows of the shared database.
-func (s *ShardedStoreSuite) TestShippedStatsAreEveryShardsSumWithAShardDown() {
+// Defect: the stats read another shard rather than what it shipped; or they read only this
+// shard's rows of the shared database.
+func (s *ShardedStoreSuite) TestShippedStatsAreEveryShardsSumWhereTheLocalOnesAreThisShardsAlone() {
 	project := map[string]string{"project": "support"}
 	s.requestIn(s.store, "app", s.base.Add(5*time.Minute), 1000, project)
 	s.requestIn(s.other, "app", s.base.Add(6*time.Minute), 2000, project)
@@ -158,43 +147,43 @@ func (s *ShardedStoreSuite) TestShippedStatsAreEveryShardsSumWithAShardDown() {
 	now := s.base.Add(10 * time.Minute)
 	s.Require().NoError(s.store.ShipStats(s.ctx, now))
 	s.Require().NoError(s.other.ShipStats(s.ctx, now))
-	down := s.withTheOtherShardDown()
-	_, err := down.Buckets.Select(s.ctx, "app", BucketFilter{Modality: "stt", Granularity: Hourly, From: s.base, To: now})
-	s.Require().Error(err, "the other shard does not answer")
+	local, err := s.store.Buckets.Select(s.ctx, "app", BucketFilter{Modality: "stt", Granularity: Hourly, From: s.base, To: now})
+	s.Require().NoError(err)
+	s.Require().Len(local, 1)
+	s.EqualValues(1000, local[0].AudioMsTotal, "the other shard's requests are not read")
 
-	buckets, err := down.Buckets.Shipped(s.ctx, "app", BucketFilter{Modality: "stt", Granularity: Daily, From: s.base, To: now})
+	buckets, err := s.store.Buckets.Shipped(s.ctx, "app", BucketFilter{Modality: "stt", Granularity: Daily, From: s.base, To: now})
 	s.Require().NoError(err)
 	s.Require().Len(buckets, 1)
 	s.EqualValues(3000, buckets[0].AudioMsTotal)
 	s.EqualValues(2, buckets[0].RequestCount)
 	s.Require().NotNil(buckets[0].Uptime)
 	s.InDelta(1, *buckets[0].Uptime, 0.001)
-	tags, err := down.TagBuckets.Shipped(s.ctx, "app", TagBucketFilter{Modality: "stt", Key: "project", Granularity: Hourly, From: s.base, To: now})
+	tags, err := s.store.TagBuckets.Shipped(s.ctx, "app", TagBucketFilter{Modality: "stt", Key: "project", Granularity: Hourly, From: s.base, To: now})
 	s.Require().NoError(err)
 	s.Require().Len(tags, 1)
 	s.Equal("support", tags[0].TagValue)
 	s.EqualValues(3000, tags[0].AudioMsTotal)
-	turns, err := down.TurnBuckets.Shipped(s.ctx, "app", TurnBucketFilter{Granularity: Hourly, From: s.base, To: now})
+	turns, err := s.store.TurnBuckets.Shipped(s.ctx, "app", TurnBucketFilter{Granularity: Hourly, From: s.base, To: now})
 	s.Require().NoError(err)
 	s.Require().Len(turns, 1)
 	s.EqualValues(3, turns[0].TurnCount)
 	s.Require().NotNil(turns[0].RoundtripP95Ms)
 	s.InEpsilon(1000, *turns[0].RoundtripP95Ms, 0.05)
-	legs, err := down.TurnBuckets.ShippedLatency(s.ctx, []string{"app"}, s.base)
+	legs, err := s.store.TurnBuckets.ShippedLatency(s.ctx, []string{"app"}, s.base)
 	s.Require().NoError(err)
 	s.EqualValues(3, legs[3].Turns)
 }
 
-// Defect: a call list reads another shard, so it fails while that shard is down, or lists a
-// call twice, or without the shard it lives in.
+// Defect: a call list reads another shard, or lists a call twice, or without the shard it lives
+// in.
 func (s *ShardedStoreSuite) TestACallListReadsAnotherShardsCallsFromTheIndex() {
 	s.Require().NoError(s.store.Calls.Start(s.ctx, &Call{ID: "here", CustomerID: "app", StartedAt: s.base}))
 	s.Require().NoError(s.other.Calls.Start(s.ctx, &Call{ID: "there", CustomerID: "app", StartedAt: s.base.Add(time.Minute)}))
 	s.Require().NoError(s.store.ShipIndex(s.ctx, s.base))
 	s.Require().NoError(s.other.ShipIndex(s.ctx, s.base))
-	down := s.withTheOtherShardDown()
 
-	calls, err := down.Calls.Select(s.ctx, "app", CallFilter{})
+	calls, err := s.store.Calls.Select(s.ctx, "app", CallFilter{})
 	s.Require().NoError(err)
 	regions := map[string]string{}
 	for _, call := range calls {

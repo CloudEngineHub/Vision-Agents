@@ -225,7 +225,7 @@ func (s *StoreSuite) explainedSharded(read func(*Store)) []string {
 	return s.explainedOn(Options{DSN: dsn, ShardDSN: dsn + separator + "application_name=shard"}, read)
 }
 
-// sentQueries keeps every statement sent, from the goroutines everyShard reads shards on too.
+// sentQueries keeps every statement sent, from the goroutines a read starts too.
 type sentQueries struct {
 	mu   sync.Mutex
 	sent []string

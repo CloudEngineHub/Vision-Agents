@@ -14,7 +14,7 @@ import (
 
 // twin is a second router of this shard: the same databases, the same shard name.
 func (s *ShardedStoreSuite) twin() *Store {
-	twin, err := OpenShards(Options{DSN: s.dsn, ShardDSN: s.shardDSN, Shards: map[string]string{"here": s.shardDSN, "there": s.other.shardDSN}})
+	twin, err := OpenShards(Options{DSN: s.dsn, ShardDSN: s.shardDSN, Shard: "here", Shards: []string{"here", "there"}})
 	s.Require().NoError(err)
 	s.T().Cleanup(func() { s.NoError(twin.Close()) })
 	s.Require().Equal("here", twin.ShardName())

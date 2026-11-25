@@ -180,6 +180,43 @@ TABLE call_homes
     CONSTRAINT call_homes_pkey PRIMARY KEY (call_id, call_type, stream_app_pk, customer_id)
     CREATE INDEX call_homes_shard_opened_idx ON public.call_homes USING btree (shard, opened_at)
 
+TABLE call_index
+    agent_id text NOT NULL
+    agent_user_id text
+    call_id text NOT NULL
+    call_type text NOT NULL DEFAULT ''::text
+    campaign_id text
+    changed_at timestamp with time zone NOT NULL
+    contact_id text
+    conversation_id text
+    customer_id text NOT NULL
+    direction text NOT NULL DEFAULT 'inbound'::text
+    ended_at timestamp with time zone
+    from_number text
+    id text NOT NULL
+    instructions text NOT NULL DEFAULT ''::text
+    llm text NOT NULL DEFAULT ''::text
+    review_notes text
+    review_score integer
+    session_id text
+    shard text NOT NULL
+    skills jsonb
+    started_at timestamp with time zone NOT NULL
+    stream_app_pk bigint
+    sts text NOT NULL DEFAULT ''::text
+    stt text NOT NULL DEFAULT ''::text
+    subagent text NOT NULL DEFAULT ''::text
+    summary text
+    tags jsonb NOT NULL DEFAULT '{}'::jsonb
+    to_number text
+    tts text NOT NULL DEFAULT ''::text
+    voice text NOT NULL DEFAULT ''::text
+    CONSTRAINT call_index_pkey PRIMARY KEY (customer_id, id)
+    CREATE INDEX call_index_agent_idx ON public.call_index USING btree (customer_id, agent_id, started_at DESC)
+    CREATE INDEX call_index_campaign_idx ON public.call_index USING btree (customer_id, campaign_id, started_at DESC) WHERE (campaign_id IS NOT NULL)
+    CREATE INDEX call_index_customer_idx ON public.call_index USING btree (customer_id, started_at DESC)
+    CREATE INDEX call_index_session_idx ON public.call_index USING btree (customer_id, session_id, started_at DESC) WHERE (session_id IS NOT NULL)
+
 TABLE campaign_attempts
     attempt integer NOT NULL
     call_id text NOT NULL DEFAULT ''::text
@@ -1208,6 +1245,59 @@ TABLE session_homes
     session_id text NOT NULL
     shard text NOT NULL
     CONSTRAINT session_homes_pkey PRIMARY KEY (session_id, customer_id)
+
+TABLE session_index
+    agent_id text NOT NULL DEFAULT ''::text
+    agent_name text NOT NULL DEFAULT ''::text
+    api_key text NOT NULL DEFAULT ''::text
+    caller_kind text NOT NULL DEFAULT ''::text
+    caller_tools jsonb
+    changed_at timestamp with time zone NOT NULL
+    closed_at timestamp with time zone
+    config_id text
+    connector_selections jsonb NOT NULL DEFAULT '[]'::jsonb
+    conversation_id text NOT NULL DEFAULT ''::text
+    created_at timestamp with time zone NOT NULL
+    custom jsonb NOT NULL DEFAULT '{}'::jsonb
+    customer_id text NOT NULL
+    description text NOT NULL DEFAULT ''::text
+    end_reason text NOT NULL DEFAULT ''::text
+    floor_control jsonb
+    forked_from text
+    id text NOT NULL
+    last_response_at timestamp with time zone
+    modality text NOT NULL DEFAULT 'voice'::text
+    model_overwrites jsonb NOT NULL DEFAULT '{}'::jsonb
+    no_ui boolean
+    opened_at timestamp with time zone
+    pinned_at timestamp with time zone
+    project text NOT NULL DEFAULT ''::text
+    remembers boolean
+    resume_history jsonb NOT NULL DEFAULT '{}'::jsonb
+    return_url text
+    review_score integer
+    searchable tsvector DEFAULT (((setweight(to_tsvector('english'::regconfig, COALESCE(title, ''::text)), 'A'::"char") || setweight(to_tsvector('english'::regconfig, COALESCE(description, ''::text)), 'B'::"char")) || setweight(to_tsvector('english'::regconfig, COALESCE(project, ''::text)), 'C'::"char")) || setweight(to_tsvector('english'::regconfig, COALESCE(agent_name, ''::text)), 'D'::"char"))
+    shard text NOT NULL
+    state text NOT NULL
+    stream_app_pk bigint
+    team text NOT NULL DEFAULT ''::text
+    title text NOT NULL DEFAULT ''::text
+    tool_timeout_ms integer
+    updated_at timestamp with time zone NOT NULL
+    usage_categories text[] NOT NULL DEFAULT '{}'::text[]
+    user_id text NOT NULL DEFAULT ''::text
+    CONSTRAINT session_index_pkey PRIMARY KEY (customer_id, id)
+    CREATE INDEX session_index_agent_id_idx ON public.session_index USING btree (customer_id, agent_id, updated_at DESC, id DESC)
+    CREATE INDEX session_index_custom_idx ON public.session_index USING gin (custom jsonb_path_ops)
+    CREATE INDEX session_index_customer_idx ON public.session_index USING btree (customer_id, created_at DESC, id DESC)
+    CREATE INDEX session_index_last_message_idx ON public.session_index USING btree (customer_id, COALESCE(last_response_at, created_at) DESC, id DESC)
+    CREATE INDEX session_index_pinned_idx ON public.session_index USING btree (customer_id, ((pinned_at IS NOT NULL)) DESC, COALESCE(last_response_at, created_at) DESC, id DESC)
+    CREATE INDEX session_index_project_last_message_idx ON public.session_index USING btree (customer_id, project, COALESCE(last_response_at, created_at) DESC, id DESC)
+    CREATE INDEX session_index_review_score_idx ON public.session_index USING btree (customer_id, review_score, COALESCE(last_response_at, created_at) DESC, id DESC) WHERE (review_score IS NOT NULL)
+    CREATE INDEX session_index_search_idx ON public.session_index USING gin (searchable)
+    CREATE INDEX session_index_updated_idx ON public.session_index USING btree (customer_id, updated_at DESC, id DESC)
+    CREATE INDEX session_index_user_idx ON public.session_index USING btree (customer_id, user_id, updated_at DESC, id DESC)
+    CREATE INDEX session_index_user_last_message_idx ON public.session_index USING btree (customer_id, user_id, COALESCE(last_response_at, created_at) DESC, id DESC)
 
 TABLE shard_index_shipped
     kind text NOT NULL

@@ -1660,7 +1660,7 @@ const corsMethods = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
 
 // corsExposedHeaders are the response headers a page's script may read.
 const corsExposedHeaders = "Server-Timing, " + RequestIDHeader + ", " + quotaLimitHeader + ", " +
-	quotaRemainingHeader + ", " + quotaResetHeader + ", Retry-After, " + unreachableShardsHeader
+	quotaRemainingHeader + ", " + quotaResetHeader + ", Retry-After, " + shardHeader
 
 // withCORS lets a browser at the API from the origins originAllowed accepts.
 //

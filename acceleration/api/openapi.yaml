@@ -2026,6 +2026,10 @@ components:
           type: string
         mode:
           $ref: '#/components/schemas/SessionMode'
+        region:
+          description: The shard the call is kept in. Set on a listed call of a deployment with shards.
+          readOnly: true
+          type: string
         review_notes:
           type: string
         review_score:
@@ -9320,6 +9324,10 @@ components:
           type: string
         project_id:
           type: string
+        region:
+          description: The shard the session is kept in, which answers for its logs. Set on a listed session of a deployment with shards.
+          readOnly: true
+          type: string
         review_notes:
           description: Why the review scored the conversation as it did. Read by a backend only.
           type: string
@@ -13291,10 +13299,6 @@ paths:
               $ref: '#/components/headers/X-Stream-Cost-Estimated'
             X-Stream-Cost-Micros:
               $ref: '#/components/headers/X-Stream-Cost-Micros'
-            X-Unreachable-Shards:
-              schema:
-                description: 'The shards that did not answer, by name and comma-separated: their calls are missing from the list. Absent when every shard answered.'
-                type: string
         "400":
           $ref: '#/components/responses/BadRequest'
         "401":
@@ -13335,10 +13339,6 @@ paths:
               $ref: '#/components/headers/X-Stream-Cost-Estimated'
             X-Stream-Cost-Micros:
               $ref: '#/components/headers/X-Stream-Cost-Micros'
-            X-Unreachable-Shards:
-              schema:
-                description: 'The shards that did not answer, by name and comma-separated: the models the call used and its usage are left out when they could not all be read. Absent when every shard answered.'
-                type: string
         "400":
           $ref: '#/components/responses/BadRequest'
         "401":

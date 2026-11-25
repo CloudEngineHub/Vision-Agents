@@ -168,20 +168,47 @@ func (s *ShardedStoreSuite) TestShippedStatsAreEveryShardsSumWithAShardDown() {
 	s.EqualValues(3, legs[3].Turns)
 }
 
-// Defect: the list fails while a shard is down, or names a shard other than the one that did
-// not answer.
-func (s *ShardedStoreSuite) TestACallListLeavesOutAShardThatIsDownAndNamesIt() {
+// Defect: a call list reads another shard, so it fails while that shard is down, or lists a
+// call twice, or without the shard it lives in.
+func (s *ShardedStoreSuite) TestACallListReadsAnotherShardsCallsFromTheIndex() {
 	s.Require().NoError(s.store.Calls.Start(s.ctx, &Call{ID: "here", CustomerID: "app", StartedAt: s.base}))
+	s.Require().NoError(s.other.Calls.Start(s.ctx, &Call{ID: "there", CustomerID: "app", StartedAt: s.base.Add(time.Minute)}))
+	s.Require().NoError(s.store.ShipIndex(s.ctx, s.base))
+	s.Require().NoError(s.other.ShipIndex(s.ctx, s.base))
 	down := s.withTheOtherShardDown()
 
-	calls, missed, err := down.Calls.SelectReachable(s.ctx, "app", CallFilter{})
+	calls, err := down.Calls.Select(s.ctx, "app", CallFilter{})
 	s.Require().NoError(err)
-	s.Require().Len(calls, 1)
-	s.Equal("here", calls[0].ID)
-	s.Require().NotNil(missed)
-	s.Equal([]string{"there"}, missed.Shards())
-	_, err = down.Calls.Select(s.ctx, "app", CallFilter{})
-	s.ErrorContains(err, "there", "a read that needs every shard still fails")
+	regions := map[string]string{}
+	for _, call := range calls {
+		regions[call.ID] = call.Region
+	}
+	s.Equal(map[string]string{"here": "here", "there": "there"}, regions)
+	s.Len(calls, 2)
+}
+
+// Defect: a session list reads this shard alone, or misses a pin another shard shipped, or a
+// pin here it has not shipped yet, or lists a session twice.
+func (s *ShardedStoreSuite) TestASessionListReadsEveryShardsSessionsWithTheirPins() {
+	s.Require().NoError(s.store.Sessions.Upsert(s.ctx, &AgentSession{ID: "mine", CustomerID: "app"}))
+	s.Require().NoError(s.other.Sessions.Upsert(s.ctx, &AgentSession{ID: "theirs", CustomerID: "app"}))
+	s.Require().NoError(s.store.ShipIndex(s.ctx, s.base))
+	s.Require().NoError(s.other.ShipIndex(s.ctx, s.base))
+	_, err := s.other.Sessions.Pin(s.ctx, "app", "theirs", true, s.base)
+	s.Require().NoError(err)
+	s.Require().NoError(s.other.ShipIndex(s.ctx, s.base))
+	_, err = s.store.Sessions.Pin(s.ctx, "app", "mine", true, s.base)
+	s.Require().NoError(err)
+
+	listed, err := s.store.Sessions.Select(s.ctx, "app", SessionFilter{})
+	s.Require().NoError(err)
+	regions := map[string]string{}
+	for _, session := range listed {
+		regions[session.ID] = session.Region
+		s.NotNil(session.PinnedAt, session.ID)
+	}
+	s.Equal(map[string]string{"mine": "here", "theirs": "there"}, regions)
+	s.Len(listed, 2)
 }
 
 // Defect: every router of a shard ships at once, or one router holds the lock of every shard,

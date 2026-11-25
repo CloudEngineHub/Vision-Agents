@@ -22,6 +22,10 @@ import (
 // answering does not hold a caller indefinitely.
 const forwardTimeout = 30 * time.Second
 
+// shardHeader names the shard (the region) that answered a list read from one shard alone,
+// such as the agent logs.
+const shardHeader = "X-Shard"
+
 // unreachableNode is what a caller is told when the session exists but the node running
 // it does not answer, which is a different thing from a session that is not there.
 const unreachableNode = "the node running this session could not be reached"
@@ -128,6 +132,9 @@ func (s *Server) nodeFor(r *http.Request) (string, bool, error) {
 		}
 		return address, true, nil
 	}
+	if call, ok := callInPath(r.URL.Path); ok {
+		return s.callNode(r.Context(), customer, call)
+	}
 	id, ok := sessionInPath(r.URL.Path)
 	if !ok {
 		return "", false, nil
@@ -153,8 +160,7 @@ func (s *Server) nodeFor(r *http.Request) (string, bool, error) {
 var errHomeShardDown = APIError{Type: ErrorTypeUnavailable, Code: codeShardUnavailable,
 	Message: "the region this session lives in could not be reached"}
 
-// errCallShardDown is a call whose shard has no node answering: its legs and lines are there
-// alone.
+// errCallShardDown is a call whose shard has no node answering: its rows are there alone.
 var errCallShardDown = APIError{Type: ErrorTypeUnavailable, Code: codeShardUnavailable,
 	Message: "the region this call lives in could not be reached"}
 
@@ -174,6 +180,26 @@ func (s *Server) homeNode(ctx context.Context, customer, id string) (string, boo
 	}
 	if address == "" {
 		return "", false, errHomeShardDown
+	}
+	return address, true, nil
+}
+
+// callNode is a node of the shard a call lives in, when that is another shard: its row, and the
+// requests and turns it made, are there alone.
+func (s *Server) callNode(ctx context.Context, customer, id string) (string, bool, error) {
+	if s.store == nil {
+		return "", false, nil
+	}
+	home, err := s.store.Calls.Elsewhere(ctx, customer, id)
+	if err != nil || home == "" {
+		return "", false, err
+	}
+	address, err := s.directory.NodeInShard(ctx, home)
+	if err != nil {
+		return "", false, err
+	}
+	if address == "" {
+		return "", false, errCallShardDown
 	}
 	return address, true, nil
 }
@@ -202,6 +228,17 @@ func (s *Server) proxySocket(w http.ResponseWriter, r *http.Request, address str
 // costs them a lookup that finds nobody and is answered here as before.
 func sessionInPath(path string) (string, bool) {
 	rest, ok := strings.CutPrefix(path, "/v1/agents/sessions/")
+	if !ok {
+		return "", false
+	}
+	id, _, _ := strings.Cut(rest, "/")
+
+	return id, id != ""
+}
+
+// callInPath returns the call a path is about, if it is about one (/v1/agents/calls/{id}...).
+func callInPath(path string) (string, bool) {
+	rest, ok := strings.CutPrefix(path, "/v1/agents/calls/")
 	if !ok {
 		return "", false
 	}

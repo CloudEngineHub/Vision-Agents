@@ -214,3 +214,42 @@ func (s *CallShardSuite) TestTheEndOfACallAnotherShardMadeIsTakenThere() {
 	s.Require().NoError(err)
 	s.Empty(left, "the call's end never reached the shard it lives in")
 }
+
+// Defect: a call another shard keeps is read here, where it is missing.
+func (s *CallShardSuite) TestACallAnotherShardKeepsIsReadThere() {
+	ctx := context.Background()
+	call := store.Call{ID: s.utils.uuid(), CustomerID: s.customerID(), AgentID: "agent", CallType: "default",
+		CallID: s.utils.uuid(), Direction: "inbound", StartedAt: time.Now().UTC().Truncate(time.Millisecond)}
+	s.Require().NoError(s.otherStore.Calls.Start(ctx, &call))
+	s.Require().NoError(s.otherStore.ShipIndex(ctx, time.Now()))
+
+	var read Call
+	s.Require().Equal(http.StatusOK, s.serverClient.do(http.MethodGet, "/v1/agents/calls/"+call.ID, nil, &read))
+
+	s.Equal(call.CallID, read.CallId)
+}
+
+// Defect: a call list reads this shard alone, or lists another shard's call twice or without
+// the shard it is kept in.
+func (s *CallShardSuite) TestACallListHoldsEveryShardsCalls() {
+	ctx := context.Background()
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	agent := s.utils.uuid()
+	here := store.Call{ID: s.utils.uuid(), CustomerID: s.customerID(), AgentID: agent, CallType: "default",
+		CallID: s.utils.uuid(), Direction: "inbound", StartedAt: at}
+	there := store.Call{ID: s.utils.uuid(), CustomerID: s.customerID(), AgentID: agent, CallType: "default",
+		CallID: s.utils.uuid(), Direction: "inbound", StartedAt: at.Add(time.Second)}
+	s.Require().NoError(s.store.Calls.Start(ctx, &here))
+	s.Require().NoError(s.otherStore.Calls.Start(ctx, &there))
+	s.Require().NoError(s.otherStore.ShipIndex(ctx, time.Now()))
+
+	var listed []Call
+	s.Require().Equal(http.StatusOK, s.serverClient.do(http.MethodGet, "/v1/agents/calls?agent_id="+agent, nil, &listed))
+
+	regions := map[string]string{}
+	for _, each := range listed {
+		regions[each.Id] = value(each.Region)
+	}
+	s.Equal(map[string]string{here.ID: "here", there.ID: "there"}, regions)
+	s.Len(listed, 2)
+}

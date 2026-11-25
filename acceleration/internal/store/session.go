@@ -1,13 +1,11 @@
 package store
 
 import (
-	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -148,10 +146,6 @@ type AgentSession struct {
 	// OpenedAt is when the router running the session opened it, first or carried on since.
 	// Zero, stored as NULL, on a row from before it was kept.
 	OpenedAt time.Time `bun:"opened_at,nullzero"`
-	// SupersededAt is when the session was carried on in another shard, as sessions were before
-	// each stayed in the shard it opened in, and a list leaves this row out. Nil for a row
-	// nothing superseded.
-	SupersededAt *time.Time `bun:"superseded_at"`
 	// ClosedAt is nil while the session is still running.
 	ClosedAt *time.Time `bun:"closed_at"`
 	// EndReason is why it ended (session.EndReason), empty while it runs and for one that
@@ -167,6 +161,9 @@ type AgentSession struct {
 	ReviewScore *int `bun:"review_score"`
 	// Rank is how well a search matched, zero outside a search.
 	Rank float32 `bun:"rank,scanonly"`
+	// Region is the shard the session lives in, as a list read it; empty on a deployment of
+	// one unnamed shard, and on a row read any other way.
+	Region string `bun:"shard,scanonly"`
 }
 
 // Validate refuses a session no list or reopen could read back. An empty state or modality is
@@ -352,9 +349,6 @@ func (r *Sessions) Upsert(ctx context.Context, session *AgentSession) error {
 			Set("end_reason = ''").
 			Set("updated_at = saved.updated_at").
 			Set("opened_at = saved.opened_at").
-			// Superseded by a run opened after this write's, the row stays superseded: the write is
-			// a late one, of a run that ended.
-			Set("superseded_at = CASE WHEN ?TableAlias.superseded_at > saved.opened_at THEN ?TableAlias.superseded_at END").
 			// A reopened session's tool settings are kept for the kind of caller that opened it (the
 			// row's caller_kind, which a reopen does not change): an end user's device carrying on
 			// its backend's conversation neither clears the backend's tools nor sets its timeout.
@@ -713,6 +707,9 @@ func (r *Sessions) Delete(ctx context.Context, customerID, id string) error {
 	if err != nil {
 		return stack.Wrap(fmt.Errorf("store: delete session: %w", err))
 	}
+	if err := r.store.unindex(ctx, indexedSessions, customerID, id); err != nil {
+		return err
+	}
 	return r.store.SessionHomes.forget(ctx, customerID, id)
 }
 
@@ -731,16 +728,11 @@ func (r *Sessions) Select(ctx context.Context, customerID string, filter Session
 		filter.Order.By = SessionSortLastMessage
 	}
 
-	lists, err := everyShard(ctx, r.store, func(ctx context.Context, db bun.IDB) ([]AgentSession, error) {
-		query := db.NewSelect().Model((*AgentSession)(nil)).
-			Where("customer_id = ?", customerID)
+	lists, err := indexedLists(ctx, r.store, indexedSessions, customerID, func(query *bun.SelectQuery) *bun.SelectQuery {
+		query = query.ColumnExpr("?TableColumns").Where("?TableAlias.customer_id = ?", customerID)
 		query = orderSessions(query, filter.Order, "", nil, filter.Cursor)
-		query = narrowSessions(query, filter)
-
-		var sessions []AgentSession
-		err := query.Scan(ctx, &sessions)
-		return sessions, err
-	})
+		return narrowSessions(query, filter)
+	}, inRegion)
 	if err != nil {
 		return nil, stack.Wrap(fmt.Errorf("store: query sessions: %w", err))
 	}
@@ -770,19 +762,14 @@ func (r *Sessions) Search(ctx context.Context, customerID, text string, filter S
 	words, args := searchedFor(text)
 	rank := "ts_rank(searchable, " + words + ")"
 	filter.Order = SessionOrder{By: SessionSortRelevance}
-	lists, err := everyShard(ctx, r.store, func(ctx context.Context, db bun.IDB) ([]AgentSession, error) {
-		query := db.NewSelect().Model((*AgentSession)(nil)).
-			ColumnExpr("?TableColumns").
+	lists, err := indexedLists(ctx, r.store, indexedSessions, customerID, func(query *bun.SelectQuery) *bun.SelectQuery {
+		query = query.ColumnExpr("?TableColumns").
 			ColumnExpr(rank+" AS rank", args...).
-			Where("customer_id = ?", customerID).
+			Where("?TableAlias.customer_id = ?", customerID).
 			Where("searchable @@ "+words, args...)
 		query = orderSessions(query, filter.Order, rank, args, filter.Cursor)
-		query = narrowSessions(query, filter)
-
-		var sessions []AgentSession
-		err := query.Scan(ctx, &sessions)
-		return sessions, err
-	})
+		return narrowSessions(query, filter)
+	}, inRegion)
 	if err != nil {
 		return nil, stack.Wrap(fmt.Errorf("store: search sessions: %w", err))
 	}
@@ -813,34 +800,18 @@ func searchedFor(text string) (string, []any) {
 		[]any{head, string(runes[start:])}
 }
 
-// pageOfSessions merges every shard's page into one in the filter's order, keeping a session
-// carried on in another shard once, by the row written last: that one says what it is now,
-// whichever way the list runs. Each shard's page is one longer than asked, so the merged one
-// still tells the caller whether there is more.
+// inRegion names the shard a session read from this one lives in.
+func inRegion(session *AgentSession, shard string) { session.Region = shard }
+
+// pageOfSessions merges the pages indexedLists read into one in the filter's order. Each is one
+// longer than asked, so the merged one still tells the caller whether there is more.
 func pageOfSessions(lists [][]AgentSession, filter SessionFilter) []AgentSession {
 	if len(lists) == 1 {
 		return lists[0]
 	}
-	newest := map[string]time.Time{}
-	for _, list := range lists {
-		for _, session := range list {
-			if written, seen := newest[session.ID]; !seen || session.UpdatedAt.After(written) {
-				newest[session.ID] = session.UpdatedAt
-			}
-		}
-	}
-	current := make([][]AgentSession, 0, len(lists))
-	for _, list := range lists {
-		current = append(current, slices.DeleteFunc(slices.Clone(list), func(session AgentSession) bool {
-			return !session.UpdatedAt.Equal(newest[session.ID])
-		}))
-	}
-	sessions := distinct(merged(current, func(a, b AgentSession) int {
+	sessions := merged(lists, func(a, b AgentSession) int {
 		return filter.Order.Compare(a.Position(), b.Position())
-	}, 0), func(session AgentSession) string { return session.ID })
-	if limit := SessionLimit(filter.Limit) + 1; len(sessions) > limit {
-		sessions = sessions[:limit]
-	}
+	}, SessionLimit(filter.Limit)+1)
 	return sessions
 }
 
@@ -849,8 +820,7 @@ func pageOfSessions(lists [][]AgentSession, filter SessionFilter) []AgentSession
 // honoured by query and forgotten by search is one a caller uses to read somebody else's
 // conversations.
 func narrowSessions(query *bun.SelectQuery, filter SessionFilter) *bun.SelectQuery {
-	// A session carried on in another shard is listed by that shard's row alone.
-	query = query.Limit(SessionLimit(filter.Limit) + 1).Where("superseded_at IS NULL")
+	query = query.Limit(SessionLimit(filter.Limit) + 1)
 
 	if filter.UserID != "" {
 		query = query.Where("user_id = ?", filter.UserID)
@@ -916,78 +886,55 @@ type SessionEnding struct {
 // Endings counts the sessions apps opened from since on, over every shard, by whether they
 // still run and why they ended: running ones first, then by reason.
 func (r *Sessions) Endings(ctx context.Context, apps []string, since time.Time) ([]SessionEnding, error) {
-	lists, err := everyShard(ctx, r.store, func(ctx context.Context, db bun.IDB) ([]SessionEnding, error) {
-		var endings []SessionEnding
-		err := db.NewSelect().
-			TableExpr("agent_sessions").
-			ColumnExpr("closed_at IS NULL AS running, end_reason, COUNT(*) AS sessions").
-			Where("customer_id IN (?)", bun.In(apps)).
-			Where("created_at >= ?", since).
-			GroupExpr("1, 2").
-			Scan(ctx, &endings)
-		return endings, err
-	})
+	db, table := r.store.sessionList()
+	var endings []SessionEnding
+	err := db.NewSelect().
+		TableExpr(table).
+		ColumnExpr("closed_at IS NULL AS running, end_reason, COUNT(*) AS sessions").
+		Where("customer_id IN (?)", bun.In(apps)).
+		Where("created_at >= ?", since).
+		GroupExpr("1, 2").
+		OrderExpr("1 DESC, 2").
+		Scan(ctx, &endings)
 	if err != nil {
 		return nil, stack.Wrap(fmt.Errorf("store: session endings: %w", err))
 	}
-	// Sorted first, so the rows of one ending from every shard are next to each other.
-	var all []SessionEnding
-	for _, list := range lists {
-		all = append(all, list...)
-	}
-	slices.SortStableFunc(all, func(a, b SessionEnding) int {
-		if a.Running != b.Running {
-			if a.Running {
-				return -1
-			}
-			return 1
-		}
-		return strings.Compare(a.EndReason, b.EndReason)
-	})
-	var endings []SessionEnding
-	for _, ending := range all {
-		if last := len(endings) - 1; last >= 0 && endings[last].Running == ending.Running &&
-			endings[last].EndReason == ending.EndReason {
-			endings[last].Sessions += ending.Sessions
-			continue
-		}
-		endings = append(endings, ending)
-	}
 	return endings, nil
+}
+
+// sessionList is the database and table a list of every shard's sessions reads: the shared
+// copy when lists are indexed (Store.ShipIndex), this shard's own otherwise.
+func (s *Store) sessionList() (bun.IDB, string) {
+	if s.Indexed() {
+		return s.global, indexedSessions.index
+	}
+	return s.shard, indexedSessions.table
 }
 
 // Latest is the limit sessions apps opened most recently from since on, over every shard,
 // newest first. Only the id, the app, the agent, the modality, when it opened and how it
 // ended are read.
 func (r *Sessions) Latest(ctx context.Context, apps []string, since time.Time, limit int) ([]AgentSession, error) {
-	// Each app's newest from agent_sessions_customer_idx, so a shard reads at most limit
-	// rows of each app however many it opened in the window, and they are ordered and cut here.
+	// Each app's newest from its customer index, so at most limit rows of each app are read
+	// however many it opened in the window, and then ordered and cut.
+	db, table := r.store.sessionList()
 	query := `
 SELECT asn.*
 FROM unnest(?::text[]) AS app(id)
 CROSS JOIN LATERAL (
     SELECT id, customer_id, agent_name, modality, created_at, closed_at, end_reason
-    FROM agent_sessions
-    WHERE customer_id = app.id AND created_at >= ? AND superseded_at IS NULL
+    FROM ` + table + `
+    WHERE customer_id = app.id AND created_at >= ?
     ORDER BY created_at DESC, id DESC
     LIMIT ?
-) AS asn`
-	lists, err := everyShard(ctx, r.store, func(ctx context.Context, db bun.IDB) ([]AgentSession, error) {
-		var sessions []AgentSession
-		err := db.NewRaw(query, pgdialect.Array(apps), since, limit).Scan(ctx, &sessions)
-		return sessions, err
-	})
-	if err != nil {
+) AS asn
+ORDER BY created_at DESC, id DESC
+LIMIT ?`
+	var sessions []AgentSession
+	if err := db.NewRaw(query, pgdialect.Array(apps), since, limit, limit).Scan(ctx, &sessions); err != nil {
 		return nil, stack.Wrap(fmt.Errorf("store: latest sessions: %w", err))
 	}
-	var sessions []AgentSession
-	for _, list := range lists {
-		sessions = append(sessions, list...)
-	}
-	slices.SortFunc(sessions, func(a, b AgentSession) int {
-		return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), strings.Compare(b.ID, a.ID))
-	})
-	return sessions[:min(len(sessions), limit)], nil
+	return sessions, nil
 }
 
 // SessionEnd is what this shard knows of whether a session is over.

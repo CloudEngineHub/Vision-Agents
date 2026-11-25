@@ -101,6 +101,7 @@ TABLE agent_sessions
     api_key text NOT NULL DEFAULT ''::text
     caller_kind text NOT NULL DEFAULT ''::text
     caller_tools jsonb
+    changed_at timestamp with time zone NOT NULL DEFAULT now()
     closed_at timestamp with time zone
     config_id text
     connector_selections jsonb NOT NULL DEFAULT '[]'::jsonb
@@ -138,6 +139,7 @@ TABLE agent_sessions
     CONSTRAINT agent_sessions_pkey PRIMARY KEY (id)
     CREATE INDEX agent_sessions_agent_id_idx ON public.agent_sessions USING btree (customer_id, agent_id, updated_at DESC, id DESC)
     CREATE INDEX agent_sessions_agent_idx ON public.agent_sessions USING btree (customer_id, agent_name, updated_at DESC, id DESC)
+    CREATE INDEX agent_sessions_changed_idx ON public.agent_sessions USING btree (changed_at, customer_id, id)
     CREATE INDEX agent_sessions_conversation_idx ON public.agent_sessions USING btree (customer_id, conversation_id, created_at DESC)
     CREATE INDEX agent_sessions_custom_idx ON public.agent_sessions USING gin (custom jsonb_path_ops)
     CREATE INDEX agent_sessions_customer_idx ON public.agent_sessions USING btree (customer_id, created_at DESC, id DESC)
@@ -153,6 +155,7 @@ TABLE agent_sessions
     CREATE INDEX agent_sessions_updated_idx ON public.agent_sessions USING btree (customer_id, updated_at DESC, id DESC)
     CREATE INDEX agent_sessions_user_idx ON public.agent_sessions USING btree (customer_id, user_id, updated_at DESC, id DESC)
     CREATE INDEX agent_sessions_user_last_message_idx ON public.agent_sessions USING btree (customer_id, user_id, COALESCE(last_response_at, created_at) DESC, id DESC)
+    CREATE TRIGGER agent_sessions_changed BEFORE UPDATE ON public.agent_sessions FOR EACH ROW EXECUTE FUNCTION mark_changed()
 
 TABLE call_bridges
     call_id text NOT NULL
@@ -263,6 +266,7 @@ TABLE calls
     call_id text NOT NULL
     call_type text NOT NULL DEFAULT ''::text
     campaign_id text
+    changed_at timestamp with time zone NOT NULL DEFAULT now()
     contact_id text
     conversation_id text
     customer_id text NOT NULL
@@ -289,11 +293,13 @@ TABLE calls
     CONSTRAINT calls_pkey PRIMARY KEY (id)
     CONSTRAINT calls_session_id_fkey FOREIGN KEY (session_id) REFERENCES agent_sessions(id) ON DELETE SET NULL
     CREATE INDEX calls_agent_idx ON public.calls USING btree (agent_id, started_at DESC)
+    CREATE INDEX calls_changed_idx ON public.calls USING btree (changed_at, customer_id, id)
     CREATE INDEX calls_customer_agent_idx ON public.calls USING btree (customer_id, agent_id, started_at DESC)
     CREATE INDEX calls_customer_campaign_idx ON public.calls USING btree (customer_id, campaign_id, started_at DESC) WHERE (campaign_id IS NOT NULL)
     CREATE INDEX calls_customer_idx ON public.calls USING btree (customer_id, started_at DESC)
     CREATE INDEX calls_session_started_idx ON public.calls USING btree (session_id, started_at DESC) WHERE (session_id IS NOT NULL)
     CREATE INDEX calls_tags_idx ON public.calls USING gin (tags)
+    CREATE TRIGGER calls_changed BEFORE UPDATE ON public.calls FOR EACH ROW EXECUTE FUNCTION mark_changed()
 
 TABLE connector_invocations
     arguments jsonb

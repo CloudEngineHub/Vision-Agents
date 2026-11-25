@@ -1246,6 +1246,7 @@ func storedSessionOf(row store.AgentSession, call store.Call) Session {
 	if row.State == store.SessionClosed {
 		rendered.State = Ended
 	}
+	rendered.Region = optional(row.Region)
 	// A session whose latest call had no Stream call was held in writing.
 	if call.CallID == "" {
 		text := true

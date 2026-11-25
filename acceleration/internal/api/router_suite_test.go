@@ -215,9 +215,9 @@ type RouterSuite struct {
 	// otherShardApart keeps otherStore's shard rows in a database of their own, as a shard in
 	// another region keeps them, for a suite to set before it starts.
 	otherShardApart bool
-	configs    *store.Store
-	live       *live.Client
-	sealer     *auth.Sealer
+	configs         *store.Store
+	live            *live.Client
+	sealer          *auth.Sealer
 	// storeOptions are what the suite's store was opened with, for a node on the same databases.
 	storeOptions store.Options
 	// activity is the activity record every node of the suite counts in.
@@ -2023,7 +2023,7 @@ func (s *RouterSuite) onAShardDown() (*testClient, *store.Store) {
 	if shardDSN := os.Getenv("ROUTER_POSTGRES_SHARD_DSN"); shardDSN != "" {
 		own = testDatabase(s.T(), shardDSN)
 	}
-	served, err := store.OpenShards(store.Options{DSN: shared, ShardDSN: own,
+	served, err := store.OpenShards(store.Options{DSN: shared, ShardDSN: own, Shard: "here",
 		Shards: map[string]string{"here": own, "there": unreachableShardDSN}})
 	s.Require().NoError(err)
 	s.T().Cleanup(func() { s.NoError(served.Close()) })

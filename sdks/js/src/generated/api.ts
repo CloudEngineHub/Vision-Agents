@@ -5712,6 +5712,8 @@ export type components = {
             /** @description The provider/model that held the conversation. */
             readonly llm_used?: string;
             readonly mode?: components["schemas"]["SessionMode"];
+            /** @description The shard the call is kept in. Set on a listed call of a deployment with shards. */
+            readonly region?: string;
             readonly review_notes?: string;
             /** @description How well the agent handled it, from 1 to 5. */
             readonly review_score?: number;
@@ -9976,6 +9978,8 @@ export type components = {
              */
             readonly pinned_at?: string;
             readonly project_id?: string;
+            /** @description The shard the session is kept in, which answers for its logs. Set on a listed session of a deployment with shards. */
+            readonly region?: string;
             /** @description Why the review scored the conversation as it did. Read by a backend only. */
             readonly review_notes?: string;
             /**
@@ -12420,7 +12424,6 @@ export interface operations {
                     readonly "X-Stream-Balance-Warning": components["headers"]["X-Stream-Balance-Warning"];
                     readonly "X-Stream-Cost-Estimated": components["headers"]["X-Stream-Cost-Estimated"];
                     readonly "X-Stream-Cost-Micros": components["headers"]["X-Stream-Cost-Micros"];
-                    readonly "X-Unreachable-Shards"?: string;
                     readonly [name: string]: unknown;
                 };
                 content: {
@@ -12454,7 +12457,6 @@ export interface operations {
                     readonly "X-Stream-Balance-Warning": components["headers"]["X-Stream-Balance-Warning"];
                     readonly "X-Stream-Cost-Estimated": components["headers"]["X-Stream-Cost-Estimated"];
                     readonly "X-Stream-Cost-Micros": components["headers"]["X-Stream-Cost-Micros"];
-                    readonly "X-Unreachable-Shards"?: string;
                     readonly [name: string]: unknown;
                 };
                 content: {

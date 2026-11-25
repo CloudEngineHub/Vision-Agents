@@ -872,7 +872,7 @@ func run(settings config.Config, logger *slog.Logger) error {
 	}
 	// Where each session lives and the rows the session and call lists read are shipped to the
 	// shared database too, a few seconds behind, so no router reads another shard's.
-	if pgStore != nil && pgStore.Sharded() {
+	if pgStore != nil && pgStore.Indexed() {
 		stopIndex := startShipper(ctx, pgStore.IndexShipper(logger, 0))
 		defer stopIndex()
 	}

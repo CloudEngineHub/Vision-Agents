@@ -228,3 +228,19 @@ func (s *ShardedStoreSuite) TestLegacyPinsAreEveryShardsCountSummed() {
 	s.Require().NoError(err)
 	s.ElementsMatch([]LegacyCount{{Kind: "session", CustomerID: "acme", Rows: 3}, {Kind: "call", CustomerID: "acme", Rows: 1}}, counted)
 }
+
+func (s *ShardedStoreSuite) TestACardEndsWhenItsSessionClosedInAnotherShardOnceShipped() {
+	ann := s.mapped("+15550100")
+	card := s.called(ann, "agent:phone-1", "session-there", 0)
+	s.Require().NoError(s.other.Sessions.Upsert(s.ctx, &AgentSession{ID: "session-there", CustomerID: "acme-app", AgentName: "docs",
+		CallerKind: "user", CreatedAt: s.base}))
+	s.Require().NoError(s.other.Sessions.Close(s.ctx, "acme-app", "session-there", s.base, s.base.Add(5*time.Minute), ""))
+	s.Require().NoError(s.other.ShipIndex(s.ctx, time.Now()))
+
+	cards := s.cardsOf("agent:omni-+15550100", CardsQuery{})
+
+	s.Require().Len(cards, 1)
+	s.Equal(card.ID, cards[0].ID)
+	s.Require().NotNil(cards[0].Until)
+	s.True(s.base.Add(5*time.Minute).Equal(*cards[0].Until), "%s", cards[0].Until)
+}

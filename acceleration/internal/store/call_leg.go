@@ -374,63 +374,61 @@ type legMatch struct {
 	revive         bool
 }
 
-// connectWaitingLeg gives the phone the first leg of the call, across the shards, that match
-// keeps.
+// connectWaitingLeg gives the phone the first leg of the call that match keeps.
 func (r *CallLegs) connectWaitingLeg(ctx context.Context, scope AppScope, callType, callID, sessionID, participant string,
 	match legMatch, at time.Time, left *time.Time) (CallLeg, Connection, error) {
 	var leftAt any
 	if left != nil {
 		leftAt = left.UTC().Truncate(time.Microsecond)
 	}
-	for _, db := range r.store.shards() {
-		waiting := db.NewSelect().Model((*CallLeg)(nil)).Column("id").
-			Where("call_type = ?", callType).Where("call_id = ?", callID).
-			Where("participant_session = ''").
-			ApplyQueryBuilder(scope.where)
-		if match.revive {
-			waiting = waiting.Where("direction = ?", Outbound).Where("end_reason = ?", LegUnanswered).
-				Where("ended_at > GREATEST(?::timestamptz, dialed_at)", at)
-		} else {
-			waiting = waiting.Where("ended_at IS NULL").Where("dialed_at IS NOT NULL").
-				WhereGroup(" AND ", func(q *bun.SelectQuery) *bun.SelectQuery {
-					return q.Where("direction = ?", Inbound).WhereOr("started_at IS NULL")
-				})
-		}
-		switch match.column {
-		case "remote_number":
-			waiting = waiting.Where("ltrim(remote_number, '+') = ?", match.number)
-		case "local_number":
-			waiting = waiting.Where("direction = ?", Outbound).Where("ltrim(local_number, '+') = ?", match.number)
-		}
-		waiting = waiting.OrderExpr("direction = ? DESC, dialed_at", Inbound).Limit(1).For("UPDATE SKIP LOCKED")
-		update := db.NewUpdate().Model((*CallLeg)(nil)).
-			Set("participant_session = ?", participant).
-			Set("stream_session_id = CASE WHEN stream_session_id = '' THEN ? ELSE stream_session_id END", sessionID)
-		switch {
-		case match.revive:
-			update = update.Set("started_at = GREATEST(?::timestamptz, dialed_at)", at).
-				Set("ended_at = CASE WHEN ?::timestamptz IS NULL THEN ended_at "+
-					"ELSE LEAST(ended_at, GREATEST(?::timestamptz, ?::timestamptz, dialed_at)) END", leftAt, leftAt, at).
-				Set("end_reason = CASE WHEN ?::timestamptz IS NULL OR ?::timestamptz >= ended_at THEN ? ELSE ? END",
-					leftAt, leftAt, LegEnded, LegLeft)
-		case left != nil:
-			update = update.Set("started_at = COALESCE(started_at, GREATEST(?::timestamptz, dialed_at))", at).
-				Set("ended_at = GREATEST(?::timestamptz, COALESCE(started_at, GREATEST(?::timestamptz, dialed_at)))", leftAt, at).
-				Set("end_reason = ?", LegLeft)
-		default:
-			update = update.Set("started_at = COALESCE(started_at, GREATEST(?::timestamptz, dialed_at))", at)
-		}
-		var connected []CallLeg
-		err := update.Where("id IN (?)", waiting).Returning("*").Scan(ctx, &connected)
-		if isViolation(err, uniqueViolation) {
-			return CallLeg{}, LegKnown, nil
-		}
-		if err != nil {
-			return CallLeg{}, NothingWaiting, stack.Wrap(fmt.Errorf("store: connect call leg: %w", err))
-		}
-		if len(connected) > 0 {
-			return connected[0], LegConnected, nil
-		}
+	db := r.store.shard
+	waiting := db.NewSelect().Model((*CallLeg)(nil)).Column("id").
+		Where("call_type = ?", callType).Where("call_id = ?", callID).
+		Where("participant_session = ''").
+		ApplyQueryBuilder(scope.where)
+	if match.revive {
+		waiting = waiting.Where("direction = ?", Outbound).Where("end_reason = ?", LegUnanswered).
+			Where("ended_at > GREATEST(?::timestamptz, dialed_at)", at)
+	} else {
+		waiting = waiting.Where("ended_at IS NULL").Where("dialed_at IS NOT NULL").
+			WhereGroup(" AND ", func(q *bun.SelectQuery) *bun.SelectQuery {
+				return q.Where("direction = ?", Inbound).WhereOr("started_at IS NULL")
+			})
+	}
+	switch match.column {
+	case "remote_number":
+		waiting = waiting.Where("ltrim(remote_number, '+') = ?", match.number)
+	case "local_number":
+		waiting = waiting.Where("direction = ?", Outbound).Where("ltrim(local_number, '+') = ?", match.number)
+	}
+	waiting = waiting.OrderExpr("direction = ? DESC, dialed_at", Inbound).Limit(1).For("UPDATE SKIP LOCKED")
+	update := db.NewUpdate().Model((*CallLeg)(nil)).
+		Set("participant_session = ?", participant).
+		Set("stream_session_id = CASE WHEN stream_session_id = '' THEN ? ELSE stream_session_id END", sessionID)
+	switch {
+	case match.revive:
+		update = update.Set("started_at = GREATEST(?::timestamptz, dialed_at)", at).
+			Set("ended_at = CASE WHEN ?::timestamptz IS NULL THEN ended_at "+
+				"ELSE LEAST(ended_at, GREATEST(?::timestamptz, ?::timestamptz, dialed_at)) END", leftAt, leftAt, at).
+			Set("end_reason = CASE WHEN ?::timestamptz IS NULL OR ?::timestamptz >= ended_at THEN ? ELSE ? END",
+				leftAt, leftAt, LegEnded, LegLeft)
+	case left != nil:
+		update = update.Set("started_at = COALESCE(started_at, GREATEST(?::timestamptz, dialed_at))", at).
+			Set("ended_at = GREATEST(?::timestamptz, COALESCE(started_at, GREATEST(?::timestamptz, dialed_at)))", leftAt, at).
+			Set("end_reason = ?", LegLeft)
+	default:
+		update = update.Set("started_at = COALESCE(started_at, GREATEST(?::timestamptz, dialed_at))", at)
+	}
+	var connected []CallLeg
+	err := update.Where("id IN (?)", waiting).Returning("*").Scan(ctx, &connected)
+	if isViolation(err, uniqueViolation) {
+		return CallLeg{}, LegKnown, nil
+	}
+	if err != nil {
+		return CallLeg{}, NothingWaiting, stack.Wrap(fmt.Errorf("store: connect call leg: %w", err))
+	}
+	if len(connected) > 0 {
+		return connected[0], LegConnected, nil
 	}
 	return CallLeg{}, NothingWaiting, nil
 }

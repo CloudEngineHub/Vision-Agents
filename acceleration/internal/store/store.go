@@ -41,10 +41,9 @@ type Store struct {
 	// repos are the repositories, one per model, each holding the handle its table lives in.
 	repos
 	// global is the database every shard shares, and shard this one's, which is global for a
-	// deployment of one shard. peers are the other shards' (see shards.go).
+	// deployment of one shard (see shards.go).
 	global *bun.DB
 	shard  *bun.DB
-	peers  []*bun.DB
 	// locks is the shared database again, in a pool of its own that credential and provider
 	// app locks are held on (tryCredentialLock).
 	locks *bun.DB
@@ -57,18 +56,14 @@ type Store struct {
 	// shard's, holding the state of its running calls. Both are nil without Redis.
 	cache rueidisaside.CacheAsideClient
 	redis rueidis.Client
-	// shardNames names each of shards(), as Options.Shards does, for what is kept per shard
-	// in the shared database.
+	// shardName names this shard, and shardNames every shard of the deployment, this one's
+	// first, for what is kept per shard in the shared database.
+	shardName  string
 	shardNames []string
 	// homed says sessions here keep the shard they opened in (SessionHomes): this router names
 	// its shard, or has one of its own.
-	homed bool
-	// shardsDown is when each shard that did not answer was last logged (settledWithout).
-	shardsDown shardWarnings
-	// globalIsShard says the shared database is also some shard's own, so its calls are not
-	// strays to drop.
-	globalIsShard bool
-	LogDrops      atomic.Int64
+	homed    bool
+	LogDrops atomic.Int64
 	// shapes is what each table an export carries looks like, read from the catalogue
 	// once rather than kept in a list here that a migration could leave behind.
 	shapes tableShapes

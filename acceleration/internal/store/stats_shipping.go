@@ -94,7 +94,7 @@ type statsShipped struct {
 // The request stats are aggregated from the requests rather than read from the shard's rollup
 // tables, which only an operator's rollup writes and whose keys read no window of time.
 func (s *Store) ShipStats(ctx context.Context, now time.Time) error {
-	shard := s.shardNames[0]
+	shard := s.shardName
 	current := now.UTC().Truncate(time.Hour)
 	from := current.Add(-time.Hour)
 	var mark statsShipped

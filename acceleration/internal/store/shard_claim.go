@@ -24,7 +24,7 @@ type ShardClaim struct {
 	// meant for.
 	Routing shardmap.Map
 	// Shards are the deployment's shards besides the ones Routing names, such as
-	// postgres.shards lists. A user last served by one of them has their work claimed there.
+	// the shards setting lists. A user last served by one of them has their work claimed there.
 	Shards []string
 }
 

@@ -753,8 +753,7 @@ func run(settings config.Config, logger *slog.Logger) error {
 		// the calls it carries to its shard.
 		agreed, stopAgreeing := context.WithCancel(context.WithoutCancel(ctx))
 		defer stopAgreeing()
-		shards := slices.Collect(maps.Keys(settings.Postgres.Shards))
-		if err := node.AgreeOnShards(agreed, liveClient.Redis(), node.ShardsKey, shards, logger); err != nil {
+		if err := node.AgreeOnShards(agreed, liveClient.Redis(), node.ShardsKey, settings.Shards, logger); err != nil {
 			return err
 		}
 	} else {
@@ -1511,7 +1510,7 @@ func run(settings config.Config, logger *slog.Logger) error {
 	shardRouting := shardmap.Map{Default: settings.ShardRouting.Default,
 		Countries: settings.ShardRouting.Countries, Regions: settings.ShardRouting.Regions}
 	shardClaim := store.ShardClaim{Shard: settings.Shard, Routing: shardRouting,
-		Shards: slices.Collect(maps.Keys(settings.Postgres.Shards))}
+		Shards: settings.Shards}
 	options := api.Options{
 		Documents:             documents,
 		Routers:               routers,
@@ -1530,7 +1529,7 @@ func run(settings config.Config, logger *slog.Logger) error {
 		Relay:                 sessionRelay,
 		Directory:             directory,
 		ShardRouting:          shardRouting,
-		Shards:                slices.Collect(maps.Keys(settings.Postgres.Shards)),
+		Shards:                settings.Shards,
 		Workers:               everyWorker,
 		Streams:               streams,
 		AudioFloor:            floor,
@@ -2156,7 +2155,7 @@ func openShards(settings config.Config) (*store.Store, error) {
 		Shard:           settings.Shard,
 		DSN:             settings.Postgres.DSN,
 		ShardDSN:        settings.Postgres.ShardDSN,
-		Shards:          settings.Postgres.Shards,
+		Shards:          settings.Shards,
 		MigrateDSN:      settings.Postgres.MigrateDSN,
 		ShardMigrateDSN: settings.Postgres.ShardMigrateDSN,
 		Redis:           store.Redis{Address: settings.Redis.Addr, Username: settings.Redis.Username, Password: settings.Redis.Password},

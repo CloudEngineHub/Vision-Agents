@@ -187,7 +187,7 @@ func (s *Store) rangeLogIDs(ctx context.Context) error {
 	}
 	defer shard.Close() //nolint:errcheck // a pool the migration is done with
 
-	numbered := &shardNumber{Name: s.shardNames[0]}
+	numbered := &shardNumber{Name: s.shardName}
 	err = global.NewInsert().Model(numbered).Column("name").
 		On("CONFLICT (name) DO UPDATE").Set("name = EXCLUDED.name").
 		Returning("number").Scan(ctx)

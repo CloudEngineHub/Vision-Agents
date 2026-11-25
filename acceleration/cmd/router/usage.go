@@ -511,7 +511,7 @@ func runUsageForgetUser(ctx context.Context, args []string, settings config.Conf
 		Shard:    settings.Shard,
 		DSN:      settings.Postgres.DSN,
 		ShardDSN: settings.Postgres.ShardDSN,
-		Shards:   settings.Postgres.Shards,
+		Shards:   settings.Shards,
 		Redis:    store.Redis{Address: settings.Redis.Addr, Username: settings.Redis.Username, Password: settings.Redis.Password},
 	})
 	if err != nil {

@@ -8722,7 +8722,7 @@ export type components = {
             readonly organization_id: string;
             /** @description The sessions the organization's apps opened from since on, from the shards listed in shards. */
             readonly sessions: components["schemas"]["ActivitySessions"];
-            /** @description The names of the shards whose requests the meters sum, this one's first. A deployment that sets no postgres.shards lists only its own shard, named by a digest, and its meters cover that shard alone. Areas are read from the database every shard shares and cover all of them. */
+            /** @description The names of the shards whose requests the meters sum, this one's first. A deployment that sets no shards lists only its own shard, named by a digest, and its meters cover that shard alone. Areas are read from the database every shard shares and cover all of them. */
             readonly shards: readonly string[] | null;
             /**
              * Format: date-time

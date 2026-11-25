@@ -225,8 +225,6 @@ other, each router's forwarding address). Figures are p50 in ms, the middle of t
 | a US session        | 500  | 200                                |
 | an EU session or call | 500 | 503 `shard_unavailable`           |
 
-The raw output of both runs is in the PR that added this page.
-
 The voice ramp (`perfbench`) did not run: the Stream key on that VM is not a Stream app
 (`GetApp` answers `api_key not found`), and an agent cannot join a call without one. It needs
 a working `STREAM_API_KEY` and `STREAM_API_SECRET`.

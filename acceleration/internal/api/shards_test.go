@@ -13,6 +13,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -111,7 +113,8 @@ func (s *CrossShardSessionSuite) TestASessionLivingInAShardNoNodeAnswersIsUnavai
 }
 
 // CallShardSuite covers what a vendor or Stream says about a call, delivered to a node in a
-// shard other than the one the call lives in.
+// shard other than the one the call lives in, and what two shards apart share: the lists and
+// stats once shipped, and an organization's calls at once.
 type CallShardSuite struct {
 	RouterSuite
 
@@ -256,6 +259,84 @@ func (s *CallShardSuite) TestACallListHoldsEveryShardsCalls() {
 	}
 	s.Equal(map[string]string{here.ID: "here", there.ID: "there"}, regions)
 	s.Len(listed, 2)
+}
+
+// Defect: a plan fetch for a bridge another shard parked is answered here, where the bridge is
+// not, and the person who picked up is bridged to nowhere.
+func (s *CallShardSuite) TestAPlanFetchForABridgeAnotherShardParkedIsAnsweredThere() {
+	ctx := context.Background()
+	token := s.otherStore.MintToken()
+	s.Require().NoError(s.otherStore.CallBridges.Insert(ctx, &store.CallBridge{
+		Token: token, CustomerID: s.customerID(), Vendor: "plivo", TrunkURI: "sip:agent@bridge.example.com",
+		CallID: s.utils.uuid(), ExpiresAt: time.Now().UTC().Add(time.Minute),
+	}))
+
+	// The suite's plivo has no credentials, so the plan itself is refused once the bridge is
+	// claimed: what tells where it was answered is the bridge being spent in its shard.
+	s.unauthenticatedClient.call(http.MethodGet, "/v1/phone/answer/"+token, nil)
+
+	_, err := s.otherStore.CallBridges.Claim(ctx, token)
+	s.Error(err, "the bridge is still waiting in the shard that parked it")
+}
+
+// Defect: each shard counts only the calls it placed, so two shards together ring past the
+// organization's calls at once.
+func (s *CallShardSuite) TestTwoShardsPlacingAtOnceCannotRingPastTheOrganizationsCap() {
+	organization := s.utils.uuid()
+	atOnce := store.CallsAtOnce{Limit: 3, Ringing: time.Minute}
+	var placed atomic.Int64
+	var wg sync.WaitGroup
+	for _, keeper := range []*outcome.Keeper{s.router.phone.Outcomes(), s.otherPhone.Outcomes()} {
+		for range 6 {
+			wg.Go(func() {
+				_, err := keeper.PlacedWithin(context.Background(), outcome.Call{
+					Key: outcome.Key{CustomerID: s.customerID(), CallType: "default", CallID: s.utils.uuid(),
+						Local: s.utils.number(), Remote: s.utils.number()},
+					Vendor: "telnyx",
+				}, organization, &atOnce)
+				if err == nil {
+					placed.Add(1)
+					return
+				}
+				s.ErrorIs(err, store.ErrCallsAtOnce)
+			})
+		}
+	}
+	wg.Wait()
+
+	s.EqualValues(3, placed.Load())
+}
+
+// Defect: once both shards shipped, the session list and the agent stats disagree on how many
+// sessions there were: one reads this shard alone, or counts the other's twice.
+func (s *CallShardSuite) TestTheSessionListAndStatsAgreeOnBothShardsSessionsOnceShipped() {
+	s.useApp(s.data.createApp())
+	ctx := context.Background()
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	ids := map[string]bool{}
+	for _, into := range []*store.Store{s.store, s.otherStore} {
+		session := &store.AgentSession{ID: s.utils.uuid(), CustomerID: s.customerID(), AgentName: "docs",
+			State: store.SessionRunning, CreatedAt: at}
+		s.Require().NoError(into.Sessions.Upsert(ctx, session))
+		s.Require().NoError(into.Responses.Insert(ctx, &store.AgentResponse{ID: s.utils.uuid(), SessionID: session.ID,
+			CustomerID: s.customerID(), CreatedAt: at}))
+		s.Require().NoError(into.ShipIndex(ctx, at))
+		s.Require().NoError(into.ShipStats(ctx, at))
+		ids[session.ID] = true
+	}
+
+	var page SessionPage
+	s.Require().Equal(http.StatusOK, s.serverClient.do(http.MethodPost, "/v1/agents/sessions/query", SessionQuery{}, &page))
+	var stats AgentStats
+	s.Require().Equal(http.StatusOK, s.serverClient.do(http.MethodGet, "/v1/stats/agents?from="+
+		url.QueryEscape(at.Add(-time.Hour).Format(time.RFC3339))+"&to="+url.QueryEscape(at.Add(time.Hour).Format(time.RFC3339)), nil, &stats))
+
+	listed := map[string]bool{}
+	for _, item := range page.Items {
+		listed[item.Id] = true
+	}
+	s.Equal(ids, listed)
+	s.EqualValues(len(ids), stats.Sessions)
 }
 
 // ShardRowsSuite covers the rows each shard keeps of its own and ships nowhere, the agent logs

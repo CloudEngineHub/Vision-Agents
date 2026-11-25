@@ -222,6 +222,10 @@ func forgottenChanges(db bun.IDB, customerID string, tables ...string) *bun.Upda
 // key, all but its deletes, which a follower needs to delete its copy; those of the guests name
 // the replacement.
 //
+// It also gives the replacement the hourly spend and people the shards shipped of the user. It
+// runs after every shard renamed its requests (ForgetUserOnShards), so a ship from then on
+// carries the replacement.
+//
 // It outlives ctx, its statements sharing the store's write timeout, and drops the user's cached
 // policy and profile whatever the commit answered, and again after a COMMIT whose answer was
 // lost (detachedWrite).
@@ -283,6 +287,16 @@ func (s *Store) ForgetUserSettings(ctx context.Context, appID, userID, replaceme
 			if *change.count, err = result.RowsAffected(); err != nil {
 				return err
 			}
+		}
+		renamedDims := slices.Clone(spendDims)
+		renamedDims[slices.Index(renamedDims, "user_id")] = "?"
+		if _, err := tx.NewUpdate().Table(shippedSpend.name).Set("user_id = ?", replacement).Set("dims = "+spendKey(renamedDims), replacement).
+			Where("customer_id = ? AND user_id = ?", appID, userID).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewUpdate().Table(shippedPeople.name).Set("user_id = ?", replacement).
+			Where("customer_id = ? AND user_id = ?", appID, userID).Exec(ctx); err != nil {
+			return err
 		}
 		// After the profile's delete, which records a change of its own that a follower deletes
 		// its copy by. The rest are deletes of a row by the replacement's id, which no follower

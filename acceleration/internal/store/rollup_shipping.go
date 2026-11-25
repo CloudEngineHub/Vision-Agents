@@ -33,12 +33,17 @@ var spendDims = []string{"customer_id", "organization_id", "api_key", "user_id",
 var spendSums = []string{"rows", "cost_micros", "input_tokens", "cached_input_tokens", "output_tokens", "audio_ms",
 	"characters", "images", "duration_ms"}
 
+// spendKey is the dims of a shard_spend_hourly row, from the expressions of its spendDims.
+func spendKey(dims []string) string {
+	return `md5(concat_ws(E'\x1f', ` + strings.Join(dims, "::text, ") + `::text))`
+}
+
 var shippedSpend = replacedTable{
 	name:    "shard_spend_hourly",
 	at:      "started_at",
 	columns: slices.Concat([]string{"started_at", "dims"}, spendDims, spendSums),
 	query: `
-SELECT started_at, md5(concat_ws(E'\x1f', ` + strings.Join(spendDims, "::text, ") + `::text)) AS dims, ` +
+SELECT started_at, ` + spendKey(spendDims) + ` AS dims, ` +
 		strings.Join(spendDims, ", ") + ", " + strings.Join(spendSums, ", ") + `
 FROM (
     SELECT date_trunc('hour', started_at, 'UTC') AS started_at, customer_id, organization_id, api_key, user_id,

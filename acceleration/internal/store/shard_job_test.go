@@ -110,6 +110,65 @@ func (s *ShardedStoreSuite) TestForgettingAUserWaitsForEveryShardAndSumsWhatEach
 	s.Zero(jobs, "the job, which names the user, is gone once read")
 }
 
+// shippedSpendOf is the rows the shards shipped of the app's spend, as shard, hour, dims and user.
+func (s *ShardedStoreSuite) shippedSpendOf(shard string) []string {
+	var rows []string
+	s.Require().NoError(s.store.global.NewRaw(`SELECT concat_ws(' ', shard, started_at, dims, user_id) FROM shard_spend_hourly
+WHERE customer_id = 'app' AND shard = ? ORDER BY 1`, shard).Scan(s.ctx, &rows))
+	return rows
+}
+
+func (s *ShardedStoreSuite) TestAForgottenUsersIDIsInNoShippedRollupAfterTheShardsShipAgain() {
+	earlier := s.base.Add(-6 * time.Hour)
+	for _, shard := range []*Store{s.store, s.other} {
+		for _, at := range []time.Time{earlier, s.base} {
+			s.Require().NoError(insertRequest(s.ctx, shard, &Request{Modality: "llm", CustomerID: "app", UserID: "ada",
+				Provider: "openai", Model: "gpt", StartedAt: at, CostMicros: 300}))
+		}
+	}
+	// Forgetting keeps a user's sessions: the app deletes them (keptUserColumns).
+	s.Require().NoError(s.store.Sessions.Upsert(s.ctx, &AgentSession{ID: "deleted", CustomerID: "app", AgentName: "docs",
+		UserID: "ada", CallerKind: "user", CreatedAt: earlier}))
+	now := s.base.Add(time.Minute)
+	for _, shard := range []*Store{s.store, s.other} {
+		s.Require().NoError(shard.ShipStats(s.ctx, now))
+		s.Require().NoError(shard.ShipIndex(s.ctx, now))
+	}
+	s.Require().NoError(s.store.Sessions.Delete(s.ctx, "app", "deleted"))
+
+	s.working()
+	ctx, cancel := context.WithTimeout(s.ctx, time.Minute)
+	defer cancel()
+	_, err := s.store.ForgetUserOnShards(ctx, "app", "ada", "forgotten:x", false)
+	s.Require().NoError(err)
+	_, err = s.store.ForgetUserSettings(s.ctx, "app", "ada", "forgotten:x", &AuditEntry{CustomerID: "app",
+		ResourceType: AuditEndUser, ResourceID: "forgotten:x", Action: AuditUpdated, Source: AuditSourceCLI, ActorID: "ops"})
+	s.Require().NoError(err)
+	for _, shard := range []*Store{s.store, s.other} {
+		s.Require().NoError(shard.ShipStats(s.ctx, now.Add(time.Minute)))
+	}
+
+	for _, table := range []string{"shard_spend_hourly", "shard_people_hourly"} {
+		var naming, renamed int
+		s.Require().NoError(s.store.global.NewRaw("SELECT count(*) FILTER (WHERE user_id = 'ada'), count(*) FILTER (WHERE user_id = 'forgotten:x') FROM ? WHERE customer_id = 'app'",
+			bun.Ident(table)).Scan(s.ctx, &naming, &renamed))
+		s.Zero(naming, table)
+		s.NotZero(renamed, "%s keeps the hours the ship does not replace, under the replacement", table)
+	}
+	indexed, err := s.store.global.NewSelect().TableExpr("session_index").Where("user_id = 'ada'").Count(s.ctx)
+	s.Require().NoError(err)
+	s.Zero(indexed)
+	spent, err := s.store.Spend.Since(s.ctx, "app", earlier)
+	s.Require().NoError(err)
+	s.EqualValues(1200, spent)
+
+	renamed := s.shippedSpendOf("here")
+	_, err = s.store.global.ExecContext(s.ctx, "DELETE FROM shard_stats_shipped WHERE shard = 'here'")
+	s.Require().NoError(err)
+	s.Require().NoError(s.store.ShipStats(s.ctx, now.Add(time.Minute)))
+	s.Equal(renamed, s.shippedSpendOf("here"), "a renamed hour is the row its shard ships of it from scratch")
+}
+
 func (s *ShardedStoreSuite) TestAWaitThatEndsFirstNamesTheShardBehindWhichStillRunsItsPart() {
 	s.leftBy(s.store, "org-a")
 	s.leftBy(s.other, "org-b")

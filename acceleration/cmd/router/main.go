@@ -1523,6 +1523,7 @@ func run(settings config.Config, logger *slog.Logger) error {
 		Relay:                 sessionRelay,
 		Directory:             directory,
 		ShardRouting:          shardRouting,
+		Shards:                slices.Collect(maps.Keys(settings.Postgres.Shards)),
 		Workers:               everyWorker,
 		Streams:               streams,
 		AudioFloor:            floor,

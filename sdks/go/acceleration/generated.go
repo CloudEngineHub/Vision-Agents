@@ -11853,6 +11853,9 @@ type ListConnectionInvocationsParams struct {
 
 	// Cursor The next_cursor of the previous page. Omitted is the first page.
 	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Region The region whose calls to list, as X-Shard or a session's region names it. Each region keeps the calls it ran. Omitted is the region answering.
+	Region *string `form:"region,omitempty" json:"region,omitempty"`
 }
 
 // ListConnectorAuditParams defines parameters for ListConnectorAudit.
@@ -11960,8 +11963,11 @@ type ListAgentLogsParams struct {
 	Q      *string    `form:"q,omitempty" json:"q,omitempty"`
 	From   *time.Time `form:"from,omitempty" json:"from,omitempty"`
 	To     *time.Time `form:"to,omitempty" json:"to,omitempty"`
-	Cursor *string    `form:"cursor,omitempty" json:"cursor,omitempty"`
-	Limit  *int       `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Region The region whose logs to read, as X-Shard or a session's region names it. Each region keeps the logs of what ran there. Omitted is the region answering; session_id reads the session's region instead.
+	Region *string `form:"region,omitempty" json:"region,omitempty"`
+	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
+	Limit  *int    `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
 // ListAgentLogsParamsSeverity defines parameters for ListAgentLogs.
@@ -11977,16 +11983,25 @@ type StreamAgentLogsParams struct {
 	Severity *StreamAgentLogsParamsSeverity `form:"severity,omitempty" json:"severity,omitempty"`
 
 	// Source Comma-separated user/agent/tool/system sources.
-	Source      *string    `form:"source,omitempty" json:"source,omitempty"`
-	Q           *string    `form:"q,omitempty" json:"q,omitempty"`
-	From        *time.Time `form:"from,omitempty" json:"from,omitempty"`
-	To          *time.Time `form:"to,omitempty" json:"to,omitempty"`
-	Cursor      *string    `form:"cursor,omitempty" json:"cursor,omitempty"`
-	LastEventID *string    `json:"Last-Event-ID,omitempty"`
+	Source *string    `form:"source,omitempty" json:"source,omitempty"`
+	Q      *string    `form:"q,omitempty" json:"q,omitempty"`
+	From   *time.Time `form:"from,omitempty" json:"from,omitempty"`
+	To     *time.Time `form:"to,omitempty" json:"to,omitempty"`
+
+	// Region The region whose logs to read, as X-Shard or a session's region names it. Each region keeps the logs of what ran there. Omitted is the region answering; session_id reads the session's region instead.
+	Region      *string `form:"region,omitempty" json:"region,omitempty"`
+	Cursor      *string `form:"cursor,omitempty" json:"cursor,omitempty"`
+	LastEventID *string `json:"Last-Event-ID,omitempty"`
 }
 
 // StreamAgentLogsParamsSeverity defines parameters for StreamAgentLogs.
 type StreamAgentLogsParamsSeverity string
+
+// GetAgentLogParams defines parameters for GetAgentLog.
+type GetAgentLogParams struct {
+	// Region The region whose logs to read, as X-Shard or a session's region names it. Each region keeps the logs of what ran there. Omitted is the region answering.
+	Region *string `form:"region,omitempty" json:"region,omitempty"`
+}
 
 // ListCustomModelsParams defines parameters for ListCustomModels.
 type ListCustomModelsParams struct {
@@ -14519,7 +14534,7 @@ type ClientInterface interface {
 	// GetAgentLog Redacted structured log details scoped to the customer
 	//
 	// Corresponds with GET /v1/agents/logs/{id} (the `GetAgentLog` operationId).
-	GetAgentLog(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetAgentLog(ctx context.Context, id string, params *GetAgentLogParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListCustomModels The language models the calling customer serves themselves
 	//
@@ -19148,8 +19163,8 @@ func (c *Client) StreamAgentLogs(ctx context.Context, params *StreamAgentLogsPar
 // GetAgentLog Redacted structured log details scoped to the customer
 //
 // Corresponds with GET /v1/agents/logs/{id} (the `GetAgentLog` operationId).
-func (c *Client) GetAgentLog(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetAgentLogRequest(c.Server, id)
+func (c *Client) GetAgentLog(ctx context.Context, id string, params *GetAgentLogParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetAgentLogRequest(c.Server, id, params)
 	if err != nil {
 		return nil, err
 	}
@@ -26040,6 +26055,18 @@ func NewListConnectionInvocationsRequest(server string, id string, params *ListC
 
 		}
 
+		if params.Region != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", false, "region", *params.Region, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
 		if encoded := queryValues.Encode(); encoded != "" {
 			rawQueryFragments = append(rawQueryFragments, encoded)
 		}
@@ -28232,6 +28259,18 @@ func NewListAgentLogsRequest(server string, params *ListAgentLogsParams) (*http.
 
 		}
 
+		if params.Region != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "region", *params.Region, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
 		if params.Cursor != nil {
 
 			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "cursor", *params.Cursor, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
@@ -28394,6 +28433,18 @@ func NewStreamAgentLogsRequest(server string, params *StreamAgentLogsParams) (*h
 
 		}
 
+		if params.Region != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "region", *params.Region, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
 		if params.Cursor != nil {
 
 			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "cursor", *params.Cursor, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
@@ -28436,7 +28487,7 @@ func NewStreamAgentLogsRequest(server string, params *StreamAgentLogsParams) (*h
 }
 
 // NewGetAgentLogRequest constructs an http.Request for the GetAgentLog method
-func NewGetAgentLogRequest(server string, id string) (*http.Request, error) {
+func NewGetAgentLogRequest(server string, id string, params *GetAgentLogParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -28459,6 +28510,33 @@ func NewGetAgentLogRequest(server string, id string) (*http.Request, error) {
 	queryURL, err := serverURL.Parse(operationPath)
 	if err != nil {
 		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Region != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "region", *params.Region, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
 	}
 
 	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
@@ -37921,7 +37999,7 @@ type ClientWithResponsesInterface interface {
 	// Returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with GET /v1/agents/logs/{id} (the `GetAgentLog` operationId).
-	GetAgentLogWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*GetAgentLogResponse, error)
+	GetAgentLogWithResponse(ctx context.Context, id string, params *GetAgentLogParams, reqEditors ...RequestEditorFn) (*GetAgentLogResponse, error)
 
 	// ListCustomModelsWithResponse The language models the calling customer serves themselves
 	//
@@ -45514,6 +45592,7 @@ func (r PutConnectionCredentialsResponse) ContentType() string {
 
 // ListConnectionInvocationsResponse200Headers the declared response headers of an HTTP 200 response for ListConnectionInvocations
 type ListConnectionInvocationsResponse200Headers struct {
+	XShard                *string
 	XStreamBalanceMicros  *int64
 	XStreamBalanceWarning *string
 	XStreamCostEstimated  *string
@@ -50298,6 +50377,7 @@ func (r ListKnowledgeUrlPassagesResponse) ContentType() string {
 
 // ListAgentLogsResponse200Headers the declared response headers of an HTTP 200 response for ListAgentLogs
 type ListAgentLogsResponse200Headers struct {
+	XShard                *string
 	XStreamBalanceMicros  *int64
 	XStreamBalanceWarning *string
 	XStreamCostEstimated  *string
@@ -50399,6 +50479,7 @@ func (r ListAgentLogsResponse) ContentType() string {
 
 // StreamAgentLogsResponse200Headers the declared response headers of an HTTP 200 response for StreamAgentLogs
 type StreamAgentLogsResponse200Headers struct {
+	XShard                *string
 	XStreamBalanceMicros  *int64
 	XStreamBalanceWarning *string
 	XStreamCostEstimated  *string
@@ -50493,6 +50574,7 @@ func (r StreamAgentLogsResponse) ContentType() string {
 
 // GetAgentLogResponse200Headers the declared response headers of an HTTP 200 response for GetAgentLog
 type GetAgentLogResponse200Headers struct {
+	XShard                *string
 	XStreamBalanceMicros  *int64
 	XStreamBalanceWarning *string
 	XStreamCostEstimated  *string
@@ -50510,6 +50592,8 @@ type GetAgentLogResponse struct {
 	HTTPResponse *http.Response
 	// JSON200 the response for an HTTP 200 `application/json` response
 	JSON200 *AgentLog
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *BadRequest
 	// JSON401 the response for an HTTP 401 `application/json` response
 	JSON401 *Unauthorized
 	// JSON402 the response for an HTTP 402 `application/json` response
@@ -50531,6 +50615,11 @@ type GetAgentLogResponse struct {
 // GetJSON200 returns the response for an HTTP 200 `application/json` response
 func (r GetAgentLogResponse) GetJSON200() *AgentLog {
 	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r GetAgentLogResponse) GetJSON400() *BadRequest {
+	return r.JSON400
 }
 
 // GetJSON401 returns the response for an HTTP 401 `application/json` response
@@ -70086,8 +70175,8 @@ func (c *ClientWithResponses) StreamAgentLogsWithResponse(ctx context.Context, p
 // Returns a wrapper object for the known response body format(s).
 //
 // Corresponds with GET /v1/agents/logs/{id} (the `GetAgentLog` operationId).
-func (c *ClientWithResponses) GetAgentLogWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*GetAgentLogResponse, error) {
-	rsp, err := c.GetAgentLog(ctx, id, reqEditors...)
+func (c *ClientWithResponses) GetAgentLogWithResponse(ctx context.Context, id string, params *GetAgentLogParams, reqEditors ...RequestEditorFn) (*GetAgentLogResponse, error) {
+	rsp, err := c.GetAgentLog(ctx, id, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -79956,6 +80045,13 @@ func ParseListConnectionInvocationsResponse(rsp *http.Response) (*ListConnection
 	switch {
 	case rsp.StatusCode == 200:
 		var headers ListConnectionInvocationsResponse200Headers
+		if values := rsp.Header.Values("X-Shard"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "X-Shard", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.XShard = &value
+		}
 		if values := rsp.Header.Values("X-Stream-Balance-Micros"); len(values) > 0 {
 			var value int64
 			if err := runtime.BindStyledParameterWithOptions("simple", "X-Stream-Balance-Micros", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: "int64"}); err != nil {
@@ -85537,6 +85633,13 @@ func ParseListAgentLogsResponse(rsp *http.Response) (*ListAgentLogsResponse, err
 	switch {
 	case rsp.StatusCode == 200:
 		var headers ListAgentLogsResponse200Headers
+		if values := rsp.Header.Values("X-Shard"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "X-Shard", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.XShard = &value
+		}
 		if values := rsp.Header.Values("X-Stream-Balance-Micros"); len(values) > 0 {
 			var value int64
 			if err := runtime.BindStyledParameterWithOptions("simple", "X-Stream-Balance-Micros", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: "int64"}); err != nil {
@@ -85649,6 +85752,13 @@ func ParseStreamAgentLogsResponse(rsp *http.Response) (*StreamAgentLogsResponse,
 	switch {
 	case rsp.StatusCode == 200:
 		var headers StreamAgentLogsResponse200Headers
+		if values := rsp.Header.Values("X-Shard"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "X-Shard", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.XShard = &value
+		}
 		if values := rsp.Header.Values("X-Stream-Balance-Micros"); len(values) > 0 {
 			var value int64
 			if err := runtime.BindStyledParameterWithOptions("simple", "X-Stream-Balance-Micros", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: "int64"}); err != nil {
@@ -85721,6 +85831,13 @@ func ParseGetAgentLogResponse(rsp *http.Response) (*GetAgentLogResponse, error) 
 		}
 		response.JSON200 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
 		var dest Unauthorized
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
@@ -85768,6 +85885,13 @@ func ParseGetAgentLogResponse(rsp *http.Response) (*GetAgentLogResponse, error) 
 	switch {
 	case rsp.StatusCode == 200:
 		var headers GetAgentLogResponse200Headers
+		if values := rsp.Header.Values("X-Shard"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "X-Shard", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.XShard = &value
+		}
 		if values := rsp.Header.Values("X-Stream-Balance-Micros"); len(values) > 0 {
 			var value int64
 			if err := runtime.BindStyledParameterWithOptions("simple", "X-Stream-Balance-Micros", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: "int64"}); err != nil {

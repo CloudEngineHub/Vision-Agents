@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -58,7 +59,8 @@ func (s *Server) onOwningNode(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if r.Header.Get("Upgrade") != "" {
+		// A stream, like a socket, cannot be carried over a call that answers once.
+		if r.Header.Get("Upgrade") != "" || r.URL.Path == "/v1/agents/logs/stream" {
 			s.proxySocket(w, r, address)
 			return
 		}
@@ -135,6 +137,9 @@ func (s *Server) nodeFor(r *http.Request) (string, bool, error) {
 	if call, ok := callInPath(r.URL.Path); ok {
 		return s.callNode(r.Context(), customer, call)
 	}
+	if shardRowsInPath(r.URL.Path) {
+		return s.regionNode(r, customer)
+	}
 	id, ok := sessionInPath(r.URL.Path)
 	if !ok {
 		return "", false, nil
@@ -180,6 +185,46 @@ func (s *Server) homeNode(ctx context.Context, customer, id string) (string, boo
 	}
 	if address == "" {
 		return "", false, errHomeShardDown
+	}
+	return address, true, nil
+}
+
+// answeringShard is the shard a read of rows one shard keeps is answered from, for shardHeader,
+// empty on a deployment of one.
+func (s *Server) answeringShard() string {
+	if s.store == nil || !s.store.Indexed() {
+		return ""
+	}
+	return s.store.ShardName()
+}
+
+// errUnknownRegion is a read of one shard's rows asking for a region no shard is named.
+var errUnknownRegion = invalidRequest("region names no region of this deployment")
+
+// errRegionDown is a read of one shard's rows asking for a region no node of which answers.
+var errRegionDown = APIError{Type: ErrorTypeUnavailable, Code: codeShardUnavailable,
+	Message: "the region asked for could not be reached"}
+
+// regionNode is a node of the shard a read of one shard's rows is for, when that is another
+// shard: the home of the session the logs are filtered to, or else the region asked for.
+func (s *Server) regionNode(r *http.Request, customer string) (string, bool, error) {
+	query := r.URL.Query()
+	if id := query.Get("session_id"); id != "" && strings.HasPrefix(r.URL.Path, "/v1/agents/logs") {
+		return s.homeNode(r.Context(), customer, id)
+	}
+	region := query.Get("region")
+	if region == "" || region == s.directory.Shard() {
+		return "", false, nil
+	}
+	if !slices.Contains(s.shardNames, region) {
+		return "", false, errUnknownRegion
+	}
+	address, err := s.directory.NodeInShard(r.Context(), region)
+	if err != nil {
+		return "", false, err
+	}
+	if address == "" {
+		return "", false, errRegionDown
 	}
 	return address, true, nil
 }
@@ -245,6 +290,21 @@ func callInPath(path string) (string, bool) {
 	id, _, _ := strings.Cut(rest, "/")
 
 	return id, id != "" && id != "reviews"
+}
+
+// shardRowsInPath reports whether a path reads rows each shard keeps of its own and ships
+// nowhere: the agent logs and a connection's invocations.
+func shardRowsInPath(path string) bool {
+	if path == "/v1/agents/logs" || strings.HasPrefix(path, "/v1/agents/logs/") {
+		return true
+	}
+	rest, ok := strings.CutPrefix(path, "/v1/agents/connections/")
+	if !ok {
+		return false
+	}
+	id, ok := strings.CutSuffix(rest, "/invocations")
+
+	return ok && id != "" && !strings.Contains(id, "/")
 }
 
 // approvalInPath returns the conversation an answer to a held call is about, if the path is

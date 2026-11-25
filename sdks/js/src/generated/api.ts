@@ -14226,6 +14226,8 @@ export interface operations {
                 readonly cursor?: string;
                 /** @description Up to 200. Omitted is 25. */
                 readonly limit?: number;
+                /** @description The region whose calls to list, as X-Shard or a session's region names it. Each region keeps the calls it ran. Omitted is the region answering. */
+                readonly region?: string;
             };
             readonly header?: never;
             readonly path: {
@@ -14239,6 +14241,7 @@ export interface operations {
             /** @description A page of tool calls */
             readonly 200: {
                 headers: {
+                    readonly "X-Shard"?: string;
                     readonly "X-Stream-Balance-Micros": components["headers"]["X-Stream-Balance-Micros"];
                     readonly "X-Stream-Balance-Warning": components["headers"]["X-Stream-Balance-Warning"];
                     readonly "X-Stream-Cost-Estimated": components["headers"]["X-Stream-Cost-Estimated"];
@@ -16199,6 +16202,8 @@ export interface operations {
                 readonly from?: string;
                 readonly limit?: number;
                 readonly q?: string;
+                /** @description The region whose logs to read, as X-Shard or a session's region names it. Each region keeps the logs of what ran there. Omitted is the region answering; session_id reads the session's region instead. */
+                readonly region?: string;
                 readonly session_id?: string;
                 /** @description The least serious level to show, not the only one: warn is warnings and errors. */
                 readonly severity?: "info" | "warn" | "error";
@@ -16216,6 +16221,8 @@ export interface operations {
             /** @description Newest first; resume cursor marks the history/live handoff. */
             readonly 200: {
                 headers: {
+                    /** @description The region that answered. Absent on a deployment of one region. */
+                    readonly "X-Shard"?: string;
                     readonly "X-Stream-Balance-Micros": components["headers"]["X-Stream-Balance-Micros"];
                     readonly "X-Stream-Balance-Warning": components["headers"]["X-Stream-Balance-Warning"];
                     readonly "X-Stream-Cost-Estimated": components["headers"]["X-Stream-Cost-Estimated"];
@@ -16231,7 +16238,7 @@ export interface operations {
             readonly 402: components["responses"]["PaymentRequired"];
             readonly 403: components["responses"]["Forbidden"];
             readonly 500: components["responses"]["InternalError"];
-            /** @description Log storage is unavailable. */
+            /** @description Log storage is unavailable, or the region asked for, or the session's, could not be reached (shard_unavailable). */
             readonly 503: {
                 headers: {
                     readonly [name: string]: unknown;
@@ -16244,7 +16251,10 @@ export interface operations {
     };
     readonly getAgentLog: {
         readonly parameters: {
-            readonly query?: never;
+            readonly query?: {
+                /** @description The region whose logs to read, as X-Shard or a session's region names it. Each region keeps the logs of what ran there. Omitted is the region answering. */
+                readonly region?: string;
+            };
             readonly header?: never;
             readonly path: {
                 readonly id: string;
@@ -16256,6 +16266,8 @@ export interface operations {
             /** @description One log with full safe metadata. */
             readonly 200: {
                 headers: {
+                    /** @description The region that answered. Absent on a deployment of one region. */
+                    readonly "X-Shard"?: string;
                     readonly "X-Stream-Balance-Micros": components["headers"]["X-Stream-Balance-Micros"];
                     readonly "X-Stream-Balance-Warning": components["headers"]["X-Stream-Balance-Warning"];
                     readonly "X-Stream-Cost-Estimated": components["headers"]["X-Stream-Cost-Estimated"];
@@ -16266,12 +16278,13 @@ export interface operations {
                     readonly "application/json": components["schemas"]["AgentLog"];
                 };
             };
+            readonly 400: components["responses"]["BadRequest"];
             readonly 401: components["responses"]["Unauthorized"];
             readonly 402: components["responses"]["PaymentRequired"];
             readonly 403: components["responses"]["Forbidden"];
             readonly 404: components["responses"]["NotFound"];
             readonly 500: components["responses"]["InternalError"];
-            /** @description Log storage is unavailable. */
+            /** @description Log storage is unavailable, or the region asked for could not be reached (shard_unavailable). */
             readonly 503: {
                 headers: {
                     readonly [name: string]: unknown;
@@ -16289,6 +16302,8 @@ export interface operations {
                 readonly cursor?: string;
                 readonly from?: string;
                 readonly q?: string;
+                /** @description The region whose logs to read, as X-Shard or a session's region names it. Each region keeps the logs of what ran there. Omitted is the region answering; session_id reads the session's region instead. */
+                readonly region?: string;
                 readonly session_id?: string;
                 /** @description The least serious level to show, not the only one: warn is warnings and errors. */
                 readonly severity?: "info" | "warn" | "error";
@@ -16308,6 +16323,8 @@ export interface operations {
             /** @description SSE events logs, checkpoint and reset. */
             readonly 200: {
                 headers: {
+                    /** @description The region that answered. Absent on a deployment of one region. */
+                    readonly "X-Shard"?: string;
                     readonly "X-Stream-Balance-Micros": components["headers"]["X-Stream-Balance-Micros"];
                     readonly "X-Stream-Balance-Warning": components["headers"]["X-Stream-Balance-Warning"];
                     readonly "X-Stream-Cost-Estimated": components["headers"]["X-Stream-Cost-Estimated"];
@@ -16323,7 +16340,7 @@ export interface operations {
             readonly 402: components["responses"]["PaymentRequired"];
             readonly 403: components["responses"]["Forbidden"];
             readonly 500: components["responses"]["InternalError"];
-            /** @description Log storage is unavailable. */
+            /** @description Log storage is unavailable, or the region asked for, or the session's, could not be reached (shard_unavailable). */
             readonly 503: {
                 headers: {
                     readonly [name: string]: unknown;

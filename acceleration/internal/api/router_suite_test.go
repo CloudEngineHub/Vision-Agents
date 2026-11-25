@@ -307,6 +307,9 @@ type RouterSuite struct {
 	shard, otherShard string
 	// shardRouting is where every node of the suite sends a hook's work, by shard.
 	shardRouting shardmap.Map
+	// shards are the shards every node of the suite knows (Options.Shards), for a suite to set
+	// before it starts the harness.
+	shards []string
 
 	// unauthenticatedClient sends no credentials. The rest hold the app's key:
 	// anonymousClient goes by a name nothing proves, guestClient and client are signed-in
@@ -813,6 +816,7 @@ func (s *RouterSuite) SetupSuite() {
 		// App mode is served only behind a gateway that declares kinds.
 		ProxyDeclaresKind: s.appMode,
 		ShardRouting:      s.shardRouting,
+		Shards:            s.shards,
 		Phone:             s.telephony(logger),
 		Simulations:       s.simulations(sessions, streams, logger),
 		Channels:          s.inbound,
@@ -1971,6 +1975,7 @@ func (s *RouterSuite) otherNodeHolding(workers *dispatch.Pool, keyring *auth.Sea
 		Sessions:          sessions,
 		Directory:         directory,
 		ShardRouting:      s.shardRouting,
+		Shards:            s.shards,
 		Dispatch:          workers,
 		Workers:           everyWorker,
 		Store:             s.otherStore,

@@ -156,6 +156,9 @@ type Options struct {
 	// meant for another shard than the Directory's is handed to a node there. The zero Map, or
 	// no Directory, keeps every hook where it lands.
 	ShardRouting shardmap.Map
+	// Shards names every shard of the deployment, this one's included: the regions a read of
+	// rows one shard keeps may ask for. Empty is this shard alone.
+	Shards []string
 	// Workers is the deployment's dispatch workers, wherever they are connected: told what
 	// the ones here host, and how a running session's text reaches one elsewhere. Absent
 	// when the Directory or the Relay is.
@@ -366,6 +369,7 @@ type Server struct {
 	relayed            *relayed
 	directory          *node.Directory
 	shards             shardmap.Map
+	shardNames         []string
 	workers            *node.Workers
 	forwarder          *node.Forwarder
 	peerCredentials    [][]byte // what a peer may present: one credential per key of the keyring
@@ -605,6 +609,7 @@ func NewServer(options Options, with ...Option) (*Server, error) {
 		sessions:           options.Sessions,
 		directory:          options.Directory,
 		shards:             options.ShardRouting,
+		shardNames:         options.Shards,
 		workers:            options.Workers,
 		streams:            options.Streams,
 		audioFloor:         options.AudioFloor,

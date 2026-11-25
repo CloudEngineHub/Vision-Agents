@@ -15564,6 +15564,13 @@ paths:
           schema:
             description: The next_cursor of the previous page. Omitted is the first page.
             type: string
+        - description: The region whose calls to list, as X-Shard or a session's region names it. Each region keeps the calls it ran. Omitted is the region answering.
+          explode: false
+          in: query
+          name: region
+          schema:
+            description: The region whose calls to list, as X-Shard or a session's region names it. Each region keeps the calls it ran. Omitted is the region answering.
+            type: string
       responses:
         "200":
           content:
@@ -15572,6 +15579,10 @@ paths:
                 $ref: '#/components/schemas/ConnectionInvocationPage'
           description: A page of tool calls
           headers:
+            X-Shard:
+              schema:
+                description: The region that answered. Absent on a deployment of one region.
+                type: string
             X-Stream-Balance-Micros:
               $ref: '#/components/headers/X-Stream-Balance-Micros'
             X-Stream-Balance-Warning:
@@ -17959,6 +17970,11 @@ paths:
           schema:
             format: date-time
             type: string
+        - description: The region whose logs to read, as X-Shard or a session's region names it. Each region keeps the logs of what ran there. Omitted is the region answering; session_id reads the session's region instead.
+          in: query
+          name: region
+          schema:
+            type: string
         - in: query
           name: cursor
           schema:
@@ -17978,6 +17994,10 @@ paths:
                 $ref: '#/components/schemas/AgentLogPage'
           description: Newest first; resume cursor marks the history/live handoff.
           headers:
+            X-Shard:
+              description: The region that answered. Absent on a deployment of one region.
+              schema:
+                type: string
             X-Stream-Balance-Micros:
               $ref: '#/components/headers/X-Stream-Balance-Micros'
             X-Stream-Balance-Warning:
@@ -18001,7 +18021,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-          description: Log storage is unavailable.
+          description: Log storage is unavailable, or the region asked for, or the session's, could not be reached (shard_unavailable).
       summary: Latest structured agent logs, with backward cursor pagination
   /v1/agents/logs/{id}:
     get:
@@ -18012,6 +18032,11 @@ paths:
           required: true
           schema:
             type: string
+        - description: The region whose logs to read, as X-Shard or a session's region names it. Each region keeps the logs of what ran there. Omitted is the region answering.
+          in: query
+          name: region
+          schema:
+            type: string
       responses:
         "200":
           content:
@@ -18020,6 +18045,10 @@ paths:
                 $ref: '#/components/schemas/AgentLog'
           description: One log with full safe metadata.
           headers:
+            X-Shard:
+              description: The region that answered. Absent on a deployment of one region.
+              schema:
+                type: string
             X-Stream-Balance-Micros:
               $ref: '#/components/headers/X-Stream-Balance-Micros'
             X-Stream-Balance-Warning:
@@ -18028,6 +18057,8 @@ paths:
               $ref: '#/components/headers/X-Stream-Cost-Estimated'
             X-Stream-Cost-Micros:
               $ref: '#/components/headers/X-Stream-Cost-Micros'
+        "400":
+          $ref: '#/components/responses/BadRequest'
         "401":
           $ref: '#/components/responses/Unauthorized'
         "402":
@@ -18043,7 +18074,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-          description: Log storage is unavailable.
+          description: Log storage is unavailable, or the region asked for could not be reached (shard_unavailable).
       summary: Redacted structured log details scoped to the customer
   /v1/agents/logs/stream:
     get:
@@ -18091,6 +18122,11 @@ paths:
           schema:
             format: date-time
             type: string
+        - description: The region whose logs to read, as X-Shard or a session's region names it. Each region keeps the logs of what ran there. Omitted is the region answering; session_id reads the session's region instead.
+          in: query
+          name: region
+          schema:
+            type: string
         - in: query
           name: cursor
           schema:
@@ -18107,6 +18143,10 @@ paths:
                 type: string
           description: SSE events logs, checkpoint and reset.
           headers:
+            X-Shard:
+              description: The region that answered. Absent on a deployment of one region.
+              schema:
+                type: string
             X-Stream-Balance-Micros:
               $ref: '#/components/headers/X-Stream-Balance-Micros'
             X-Stream-Balance-Warning:
@@ -18130,7 +18170,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-          description: Log storage is unavailable.
+          description: Log storage is unavailable, or the region asked for, or the session's, could not be reached (shard_unavailable).
       summary: Read-only SSE of durable logs with replay
   /v1/agents/models:
     get:

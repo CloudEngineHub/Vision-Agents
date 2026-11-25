@@ -78,6 +78,9 @@ The dashboard talks to one URL, which may be in any region.
   pretends to.
 - A running session is found through the node directory first, so a request reaches the
   exact router running it.
+- **Agent logs and a connection's tool calls** are not shipped. Logs filtered to a `session_id`
+  are read in the session's shard. Any other read is of this shard, or of the shard `region`
+  names, and `X-Shard` says which answered.
 
 ### An incoming phone call
 
@@ -231,10 +234,8 @@ a working `STREAM_API_KEY` and `STREAM_API_SECRET`.
 
 ## Not done
 
-- **Fan-out readers still exist.** Agent logs, connector invocations, user exports and
-  forgetting a user still read every shard. They move to forwarding by `session_id` (logs
-  and invocations, with a `region` parameter and an `X-Shard` header) and to per-shard jobs
-  (forget, guest claims, legacy pins). Then `peers`, `everyShard` and `postgres.shards` are
+- **Fan-out readers still exist.** User exports and forgetting a user still read every
+  shard. They move to per-shard jobs (forget, guest claims, legacy pins). Then `peers`, `everyShard` and `postgres.shards` are
   deleted, and the config lists shard names only (`shards: [us-east4, europe-west4]`).
 - **Terraform** in `chat/infra/accelerate` sets `ROUTER_POSTGRES_SHARDS`; it changes to the
   list of names once the peers are gone.

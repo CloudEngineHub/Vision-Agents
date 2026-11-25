@@ -3,6 +3,7 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,10 +11,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/GetStream/Vision-Agents/acceleration/internal/connectors/core"
+	"github.com/GetStream/Vision-Agents/acceleration/internal/connectors/schemes/bearer"
 	"github.com/GetStream/Vision-Agents/acceleration/internal/node"
 	"github.com/GetStream/Vision-Agents/acceleration/internal/phone"
 	"github.com/GetStream/Vision-Agents/acceleration/internal/phone/outcome"
@@ -252,4 +256,193 @@ func (s *CallShardSuite) TestACallListHoldsEveryShardsCalls() {
 	}
 	s.Equal(map[string]string{here.ID: "here", there.ID: "there"}, regions)
 	s.Len(listed, 2)
+}
+
+// ShardRowsSuite covers the rows each shard keeps of its own and ships nowhere, the agent logs
+// and a connection's invocations, read through a node of a shard that does not hold them.
+type ShardRowsSuite struct {
+	RouterSuite
+
+	// other is the node in the other shard, running every session a test here opens.
+	other *httptest.Server
+}
+
+func TestShardRowsSuite(t *testing.T) {
+	runSuite(t, new(ShardRowsSuite))
+}
+
+func (s *ShardRowsSuite) SetupSuite() {
+	s.shard, s.otherShard = "here", "there"
+	s.shards = []string{"here", "there", "gone"}
+	s.otherShardApart = true
+	s.RouterSuite.SetupSuite()
+	s.other = s.otherNode()
+}
+
+func (s *ShardRowsSuite) SetupTest() {
+	s.useApp(s.data.createApp())
+}
+
+// logged writes a log row of the app's in into's shard, and returns it.
+func (s *ShardRowsSuite) logged(into *store.Store, session string) store.AgentLog {
+	entry := store.AgentLog{CustomerID: s.customerID(), SessionID: session, Source: "agent", Severity: "info",
+		EventType: "turn", Message: s.utils.uuid()}
+	s.Require().NoError(into.AgentLogs.Insert(context.Background(), &entry))
+	return entry
+}
+
+// logs is the page this node answers path with, and the shard it says answered.
+func (s *ShardRowsSuite) logs(path string) (AgentLogPage, string) {
+	response := s.serverClient.raw(http.MethodGet, path, nil)
+	s.Require().Equal(http.StatusOK, response.StatusCode)
+	var page AgentLogPage
+	s.Require().NoError(json.NewDecoder(response.Body).Decode(&page))
+	return page, response.Header.Get(shardHeader)
+}
+
+func logMessages(page AgentLogPage) []string {
+	messages := make([]string, len(page.Items))
+	for i, item := range page.Items {
+		messages[i] = item.Message
+	}
+	return messages
+}
+
+// openedThere is a session the node in the other shard opened, once its home is recorded.
+func (s *ShardRowsSuite) openedThere() string {
+	opened := s.serverClient.on(s.other).createSession(textSession(nil))
+	s.Require().Eventually(func() bool {
+		home, err := s.store.SessionHomes.Of(context.Background(), s.customerID(), opened.Id)
+		return err == nil && home == "there"
+	}, settleFor, 10*time.Millisecond, "the session's home was recorded")
+	return opened.Id
+}
+
+// Defect: the logs of a session another shard holds are read here, where they are not.
+func (s *ShardRowsSuite) TestASessionsLogsAreReadInTheShardItLivesIn() {
+	id := s.openedThere()
+	there := s.logged(s.otherStore, id)
+
+	page, shard := s.logs("/v1/agents/logs?session_id=" + id)
+
+	s.Contains(logMessages(page), there.Message)
+	s.Equal("there", shard)
+}
+
+// Defect: the logs read here include another shard's, or region does not reach that shard, or
+// X-Shard names a shard that did not answer.
+func (s *ShardRowsSuite) TestAnotherShardsLogsAreReadOnlyWhenItsRegionIsAskedFor() {
+	there := s.logged(s.otherStore, "")
+
+	local, shard := s.logs("/v1/agents/logs")
+	s.NotContains(logMessages(local), there.Message, "another shard's log was read here")
+	s.Equal("here", shard)
+
+	remote, shard := s.logs("/v1/agents/logs?region=there")
+	s.Contains(logMessages(remote), there.Message)
+	s.Equal("there", shard)
+}
+
+// Defect: one log row of another shard is looked for here alone.
+func (s *ShardRowsSuite) TestAnotherShardsLogIsFoundInItsRegion() {
+	there := s.logged(s.otherStore, "")
+	path := "/v1/agents/logs/" + strconv.FormatInt(there.ID, 10)
+
+	s.Equal(http.StatusNotFound, s.serverClient.do(http.MethodGet, path, nil, nil))
+	var found AgentLog
+	s.Require().Equal(http.StatusOK, s.serverClient.do(http.MethodGet, path+"?region=there", nil, &found))
+	s.Equal(there.Message, found.Message)
+}
+
+// Defect: a session's log stream is read here, where its rows are not.
+func (s *ShardRowsSuite) TestASessionsLogStreamIsReadInTheShardItLivesIn() {
+	id := s.openedThere()
+	page, _ := s.logs("/v1/agents/logs?session_id=" + id)
+	there := s.logged(s.otherStore, id)
+
+	ctx, cancel := context.WithTimeout(context.Background(), settleFor)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, s.server.URL+"/v1/agents/logs/stream?session_id="+id+
+		"&cursor="+url.QueryEscape(page.ResumeCursor), nil)
+	s.Require().NoError(err)
+	request.Header = s.serverClient.header.Clone()
+	response, err := s.server.Client().Do(request)
+	s.Require().NoError(err)
+	defer response.Body.Close()
+	s.Require().Equal(http.StatusOK, response.StatusCode)
+	s.Equal("there", response.Header.Get(shardHeader))
+
+	// Two logs, the second written once the first came: a stream that ends after its first answer
+	// misses it.
+	awaited := []string{there.Message}
+	lines := bufio.NewScanner(response.Body)
+	for lines.Scan() {
+		if strings.Contains(lines.Text(), awaited[len(awaited)-1]) {
+			if len(awaited) == 2 {
+				return
+			}
+			awaited = append(awaited, s.logged(s.otherStore, id).Message)
+		}
+	}
+	s.Fail("a log written in the session's shard never came", "%v", lines.Err())
+}
+
+func (s *ShardRowsSuite) TestARegionNoShardIsNamedIsRefused() {
+	for _, path := range []string{"/v1/agents/logs?region=nowhere", "/v1/agents/connections/" + s.utils.uuid() + "/invocations?region=nowhere"} {
+		status, message := s.serverClient.failure(http.MethodGet, path, nil)
+
+		s.Equal(http.StatusBadRequest, status, path)
+		s.Equal(errUnknownRegion.Message, message, path)
+	}
+}
+
+func (s *ShardRowsSuite) TestARegionNoNodeAnswersIsUnavailable() {
+	status, payload := s.serverClient.call(http.MethodGet, "/v1/agents/logs?region=gone", nil)
+
+	s.Equal(http.StatusServiceUnavailable, status)
+	var answered ErrorResponse
+	s.Require().NoError(json.Unmarshal(payload, &answered))
+	s.Equal(codeShardUnavailable, answered.Error.Code)
+}
+
+// invocations is the ids of the calls this node lists of a connection, and the shard it says
+// answered.
+func (s *ShardRowsSuite) invocations(path string) ([]string, string) {
+	response := s.serverClient.raw(http.MethodGet, path, nil)
+	s.Require().Equal(http.StatusOK, response.StatusCode)
+	var page ConnectionInvocationPage
+	s.Require().NoError(json.NewDecoder(response.Body).Decode(&page))
+	ids := make([]string, len(page.Items))
+	for i, item := range page.Items {
+		ids[i] = item.ID
+	}
+	return ids, response.Header.Get(shardHeader)
+}
+
+// Defect: a connection's calls read here include another shard's, or region does not reach
+// that shard, or X-Shard names a shard that did not answer.
+func (s *ShardRowsSuite) TestAnotherShardsInvocationsAreListedOnlyWhenItsRegionIsAskedFor() {
+	ctx := context.Background()
+	connectorID := "custom_sharded" + strings.ReplaceAll(s.utils.uuid(), "-", "")
+	manifest, err := core.ParseManifest([]byte("id: " + connectorID + "\nrevision: 1\nname: Sharded\n" +
+		"endpoints:\n  api_base: https://api.example.com\nschemes: [bearer]\n"))
+	s.Require().NoError(err)
+	_, err = s.store.ConnectorDefinitions.Revise(ctx, s.customerID(), manifest)
+	s.Require().NoError(err)
+	connection := &store.ConnectorConnection{CustomerID: s.customerID(), ConnectorID: connectorID,
+		OwnerType: store.OwnerApp, AuthScheme: bearer.Name, DefinitionRevision: 1}
+	s.Require().NoError(s.store.ConnectorConnections.Insert(ctx,
+		core.Registry{Schemes: map[string]core.Scheme{bearer.Name: bearer.New()}}, connection))
+	there := store.ConnectorInvocation{CustomerID: s.customerID(), ConnectionID: connection.ID, ConnectorID: connectorID,
+		Tool: "search", StartedAt: time.Now()}
+	s.Require().NoError(s.otherStore.ConnectorInvocations.Insert(ctx, &there))
+	path := "/v1/agents/connections/" + connection.ID + "/invocations"
+
+	local, shard := s.invocations(path)
+	s.NotContains(local, there.ID, "another shard's call was read here")
+	s.Equal("here", shard)
+
+	remote, shard := s.invocations(path + "?region=there")
+	s.Equal([]string{there.ID}, remote)
+	s.Equal("there", shard)
 }

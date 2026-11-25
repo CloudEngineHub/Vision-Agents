@@ -423,11 +423,17 @@ func (r *AgentLogs) Get(ctx context.Context, customerID string, id int64) (Agent
 	if customerID == "" {
 		return AgentLog{}, stack.Wrap(fmt.Errorf("%w: %d", ErrNoAgentLog, id))
 	}
-	row, err := whicheverHolder(ctx, r.store, func(ctx context.Context, db bun.IDB) (AgentLog, error) {
-		var row AgentLog
-		err := db.NewSelect().Model(&row).Where("customer_id = ? AND id = ?", customerID, id).Scan(ctx)
-		return row, err
-	})
+	var row AgentLog
+	err := sql.ErrNoRows
+	for _, db := range r.store.holders() {
+		err = db.NewSelect().Model(&row).Where("customer_id = ? AND id = ?", customerID, id).Scan(ctx)
+		if absentTable(err) {
+			err = sql.ErrNoRows
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			break
+		}
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return AgentLog{}, stack.Wrap(fmt.Errorf("%w: %d", ErrNoAgentLog, id))
 	}

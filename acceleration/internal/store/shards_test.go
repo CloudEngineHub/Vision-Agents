@@ -38,9 +38,12 @@ func (s *ShardedStoreSuite) TestARequestsLogIsInTheShardThatWroteIt() {
 	s.sessionCall(s.other, Call{ID: "call", SessionID: "session", CustomerID: "app", AgentID: "agent", StartedAt: s.base}, "cfg")
 	s.Require().NoError(insertRequest(s.ctx, s.other, &Request{Modality: "tts", CustomerID: "app", AgentID: "agent", Provider: "cartesia", Model: "sonic", StartedAt: s.base.Add(time.Second), Success: true}))
 
-	logs, err := s.store.AgentLogs.Select(s.ctx, "app", AgentLogFilter{Limit: 10})
+	logs, err := s.other.AgentLogs.Select(s.ctx, "app", AgentLogFilter{Limit: 10})
 	s.Require().NoError(err)
 	s.Require().Len(logs, 1, "one row, in the shard, rather than one in the shared database as well")
+	here, err := s.store.AgentLogs.Select(s.ctx, "app", AgentLogFilter{Limit: 10})
+	s.Require().NoError(err)
+	s.Empty(here, "another shard's log is read there")
 	s.Equal("tts request completed", logs[0].Message)
 	s.Equal("cfg", logs[0].ConfigID)
 	s.Equal("session", logs[0].SessionID, "the session of the call, not the call")
@@ -54,10 +57,10 @@ func (s *ShardedStoreSuite) requestLogged(customer string, success bool, errorCo
 	s.sessionCall(s.other, Call{ID: "call", SessionID: "session-" + customer, CustomerID: customer, AgentID: "agent", StartedAt: s.base}, "cfg")
 	s.Require().NoError(insertRequest(s.ctx, s.other, &Request{Modality: "llm", CustomerID: customer, AgentID: "agent", Provider: "openai", Model: "gpt",
 		StartedAt: s.base.Add(time.Second), InputTokens: 10, OutputTokens: 4, Success: success, ErrorCode: errorCode}))
-	logs, err := s.store.AgentLogs.Select(s.ctx, customer, AgentLogFilter{Limit: 10})
+	logs, err := s.other.AgentLogs.Select(s.ctx, customer, AgentLogFilter{Limit: 10})
 	s.Require().NoError(err)
 	s.Require().Len(logs, 1)
-	logged, err := s.store.AgentLogs.Get(s.ctx, customer, logs[0].ID)
+	logged, err := s.other.AgentLogs.Get(s.ctx, customer, logs[0].ID)
 	s.Require().NoError(err)
 	return logged
 }

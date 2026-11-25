@@ -367,14 +367,13 @@ func whicheverShard[T any](ctx context.Context, s *Store, read func(context.Cont
 // is dropped. Shards migrate one at a time, so a peer may not have the table yet: it holds none
 // of its rows, rather than failing the read.
 
-// holders is every database that may hold the rows of a moving table: every shard's, this
-// one's first, then the shared one unless it is already one of the shards.
+// holders is every database that may hold this shard's rows of a moving table: this shard's,
+// then the shared one unless it is this shard's. Another shard's rows are read there.
 func (s *Store) holders() []bun.IDB {
-	all := s.shards()
-	if s.Sharded() && !s.globalIsShard {
-		all = append(all, s.global)
+	if s.Sharded() {
+		return []bun.IDB{s.shard, s.global}
 	}
-	return all
+	return []bun.IDB{s.shard}
 }
 
 // everyHolder reads a moving table from every database of holders at once, in its order. The

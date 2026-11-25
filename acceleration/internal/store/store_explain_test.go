@@ -77,7 +77,7 @@ func (s *StoreSuite) seededDatabase() string {
 var seedStatements = []string{
 	`INSERT INTO agent_sessions (id, customer_id, config_id, agent_name, agent_id, conversation_id, user_id,
 		caller_kind, api_key, team, title, project, state, modality, created_at, updated_at, closed_at,
-		last_response_at, pinned_at, review_score, stream_app_pk)
+		last_response_at, pinned_at, review_score, stream_app_pk, changed_at)
 	SELECT 'seeded-session-' || n, 'customer-' || (n % 200), 'config-' || (n % 2000), 'agent ' || (n % 2000),
 		'agent-' || (n % 2000), 'conversation-' || (n % 50000), 'user-' || (n % 20000),
 		CASE WHEN n % 10 = 0 THEN 'anonymous' ELSE 'user' END, 'key-' || (n % 1000), 'team-' || (n % 400),
@@ -85,7 +85,7 @@ var seedStatements = []string{
 		(ARRAY['text', 'voice', 'video'])[n % 3 + 1], at, at + interval '10 minutes',
 		CASE WHEN n % 100 <> 0 THEN at + interval '10 minutes' END, at + interval '9 minutes',
 		CASE WHEN n % 500 = 0 THEN at END, CASE WHEN n % 20 = 0 THEN n % 5 + 1 END,
-		CASE WHEN n % 7 <> 0 THEN 1 + n % 3 END
+		CASE WHEN n % 7 <> 0 THEN 1 + n % 3 END, at + interval '10 minutes'
 	FROM generate_series(1, ?1) AS n, LATERAL (SELECT ?0::timestamptz - (?1 - n) * interval '77 seconds' AS at) AS t`,
 
 	`INSERT INTO session_homes (customer_id, session_id, shard, opened_at)
@@ -97,12 +97,12 @@ var seedStatements = []string{
 	FROM generate_series(1, ?1) AS n, LATERAL (SELECT ?0::timestamptz - (?1 - n) * interval '77 seconds' AS at) AS t`,
 
 	`INSERT INTO calls (id, session_id, customer_id, stream_app_pk, call_type, call_id, agent_id, conversation_id,
-		campaign_id, direction, started_at, ended_at, llm, review_score)
+		campaign_id, direction, started_at, ended_at, llm, review_score, changed_at)
 	SELECT 'seeded-call-' || n, 'seeded-session-' || n, 'customer-' || (n % 200),
 		CASE WHEN n % 7 <> 0 THEN 1 + n % 3 END, 'default', CASE WHEN n % 3 = 0 THEN '' ELSE 'stream-' || n END,
 		'agent-' || (n % 2000), 'conversation-' || (n % 50000), CASE WHEN n % 10 = 0 THEN 'campaign-' || (n % 30) END,
 		CASE WHEN n % 2 = 0 THEN 'outbound' ELSE 'inbound' END, at, CASE WHEN n % 100 <> 0 THEN at + interval '5 minutes' END,
-		'gpt', CASE WHEN n % 20 = 0 THEN n % 5 + 1 END
+		'gpt', CASE WHEN n % 20 = 0 THEN n % 5 + 1 END, at + interval '5 minutes'
 	FROM generate_series(1, ?1) AS n, LATERAL (SELECT ?0::timestamptz - (?1 - n) * interval '77 seconds' AS at) AS t`,
 
 	`INSERT INTO session_index (shard, id, customer_id, stream_app_pk, config_id, agent_name, agent_id, conversation_id,

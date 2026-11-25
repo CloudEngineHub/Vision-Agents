@@ -31,6 +31,25 @@ func (s *ShardedStoreSuite) TestACallAnotherShardRanIsListedOnceShippedButFoundT
 	s.Equal("there", found.ID)
 }
 
+// Defect: the owner-kind backfill decides on this shard's sessions alone, and stamps a
+// conversation with the one kind it sees here.
+func (s *ShardedStoreSuite) TestTheKindsAUserHeldAConversationAsAreEveryShardsShipped() {
+	held := func(store *Store, id, kind string) {
+		s.Require().NoError(store.Sessions.Upsert(s.ctx, &AgentSession{ID: id, CustomerID: "app", ConversationID: "agent:c",
+			UserID: "sam", CallerKind: kind, CreatedAt: s.base}))
+	}
+	held(s.store, "here", UserKindAuthenticated)
+	held(s.other, "there", UserKindGuest)
+	s.Require().NoError(s.other.ShipIndex(s.ctx, s.base))
+
+	kinds, err := s.store.Sessions.CallerKinds(s.ctx, "app", "agent:c", "sam")
+	s.Require().NoError(err)
+	s.ElementsMatch([]string{UserKindAuthenticated, UserKindGuest}, kinds)
+	guest, err := s.store.Sessions.HeldAsGuest(s.ctx, "app", "sam")
+	s.Require().NoError(err)
+	s.True(guest, "held as a guest in the other shard")
+}
+
 func (s *ShardedStoreSuite) TestSpendIsWhatEveryShardShipped() {
 	s.Require().NoError(insertRequest(s.ctx, s.store, &Request{Modality: "llm", CustomerID: "app", Provider: "openai", Model: "gpt", StartedAt: s.base, CostMicros: 300}))
 	s.Require().NoError(insertRequest(s.ctx, s.other, &Request{Modality: "llm", CustomerID: "app", Provider: "openai", Model: "gpt", StartedAt: s.base, CostMicros: 200}))

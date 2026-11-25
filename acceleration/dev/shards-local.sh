@@ -39,8 +39,6 @@ up() {
 [
   {"name": "pg_global", "listen": "127.0.0.1:15432", "upstream": "127.0.0.1:5432", "enabled": true},
   {"name": "redis_global", "listen": "127.0.0.1:16379", "upstream": "127.0.0.1:6379", "enabled": true},
-  {"name": "pg_eu_from_us", "listen": "127.0.0.1:25432", "upstream": "127.0.0.1:5432", "enabled": true},
-  {"name": "pg_us_from_eu", "listen": "127.0.0.1:25433", "upstream": "127.0.0.1:5432", "enabled": true},
   {"name": "node_us", "listen": "127.0.0.1:28080", "upstream": "127.0.0.1:8080", "enabled": true},
   {"name": "node_eu", "listen": "127.0.0.1:28081", "upstream": "127.0.0.1:8081", "enabled": true}
 ]
@@ -58,12 +56,11 @@ EOF
     ROUTER_MOCK_PROVIDERS=true ROUTER_AUTH_MODE=noauth ROUTER_LIMITS_MODE=off
     # Peers forward to each other only with a key encryption key, the same on both.
     ROUTER_DEV_KEK=6c6f63616c2d7368617264732d6b656b6c6f63616c2d7368617264732d6b656b
-    ROUTER_USAGE_URL=http://127.0.0.1:8070 ROUTER_USAGE_TOKEN=local-usage-token)
+    ROUTER_USAGE_URL=http://127.0.0.1:8070 ROUTER_USAGE_TOKEN=local-usage-token ROUTER_SHARDS=us,eu)
   name=router-us started env "${shared[@]}" ROUTER_ADDR=127.0.0.1:8080 ROUTER_PUBLIC_URL=http://localhost:8080 \
     ROUTER_SHARD=us ROUTER_NODE_ADVERTISE=127.0.0.1:28080 \
     ROUTER_POSTGRES_DSN="$pg:5432/bench_global?sslmode=disable" \
     ROUTER_POSTGRES_SHARD_DSN="$pg:5432/bench_us?sslmode=disable" \
-    ROUTER_POSTGRES_SHARDS="us=$pg:5432/bench_us?sslmode=disable,eu=$pg:25432/bench_eu?sslmode=disable" \
     ROUTER_REDIS_ADDR=localhost:6379 ROUTER_REDIS_SHARD_ADDR=localhost:6380 \
     ROUTER_USAGE_REDIS_URL=redis://localhost:6379 "$router"
   healthy http://127.0.0.1:8080/health
@@ -71,7 +68,6 @@ EOF
     ROUTER_SHARD=eu ROUTER_NODE_ADVERTISE=127.0.0.1:28081 \
     ROUTER_POSTGRES_DSN="$pg:15432/bench_global?sslmode=disable" \
     ROUTER_POSTGRES_SHARD_DSN="$pg:5432/bench_eu?sslmode=disable" \
-    ROUTER_POSTGRES_SHARDS="eu=$pg:5432/bench_eu?sslmode=disable,us=$pg:25433/bench_us?sslmode=disable" \
     ROUTER_REDIS_ADDR=localhost:16379 ROUTER_REDIS_SHARD_ADDR=localhost:6381 \
     ROUTER_USAGE_REDIS_URL=redis://localhost:16379 "$router"
   healthy http://127.0.0.1:8081/health

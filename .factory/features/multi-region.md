@@ -234,11 +234,12 @@ a working `STREAM_API_KEY` and `STREAM_API_SECRET`.
 
 ## Not done
 
-- **Fan-out readers still exist.** User exports and forgetting a user still read every
-  shard. They move to per-shard jobs (forget, guest claims, legacy pins). Then `peers`, `everyShard` and `postgres.shards` are
-  deleted, and the config lists shard names only (`shards: [us-east4, europe-west4]`).
-- **Terraform** in `chat/infra/accelerate` sets `ROUTER_POSTGRES_SHARDS`; it changes to the
-  list of names once the peers are gone.
+- **Terraform** in `chat/infra/accelerate` still sets `ROUTER_POSTGRES_SHARDS`, which the router
+  now refuses at start. Each region's router needs `ROUTER_SHARDS` with every shard's name
+  instead (`us-east4,europe-west4`), the same on every router, and keeps `ROUTER_SHARD` and
+  `ROUTER_POSTGRES_SHARD_DSN`.
+- **Exporting a customer** from a deployment of shards is still refused (`not_configured`): an
+  export reads its own shard alone, and a shard's tables record no changes.
 - **Rollups are whole hours.** A stats window that starts mid-hour counts that hour whole;
   tool p99 is averaged across hours, and the concurrency peak is per minute.
 - **Lists from other regions lag** by about 5 seconds, and a row deleted in another region

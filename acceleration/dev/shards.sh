@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 api=${TOXIPROXY_URL:-http://localhost:8474}
 
-# links is every link Toxiproxy holds: compose.shards.yaml's four, and shards-local.sh's
+# links is every link Toxiproxy holds: compose.shards.yaml's two, and shards-local.sh's
 # forwards too.
 links() {
   proxies=$(curl -sSf "$api/proxies" | grep -oE '"[A-Za-z0-9_]+":\{"name"' | cut -d'"' -f2 | sort | tr '\n' ' ')

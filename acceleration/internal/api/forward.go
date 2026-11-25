@@ -222,10 +222,9 @@ func (s *Server) proxySocket(w http.ResponseWriter, r *http.Request, address str
 	proxy.ServeHTTP(w, r)
 }
 
-// sessionInPath returns the session a path is about, if it is about one.
-//
-// The collection paths -- query, search -- come back as ids nothing is running, which
-// costs them a lookup that finds nobody and is answered here as before.
+// sessionInPath returns the session a path is about, if it is about one. The collection path
+// /v1/agents/sessions/query is about none: looking it up as an id would cost every list a trip
+// to the shared Redis and database that finds nobody.
 func sessionInPath(path string) (string, bool) {
 	rest, ok := strings.CutPrefix(path, "/v1/agents/sessions/")
 	if !ok {
@@ -233,10 +232,11 @@ func sessionInPath(path string) (string, bool) {
 	}
 	id, _, _ := strings.Cut(rest, "/")
 
-	return id, id != ""
+	return id, id != "" && id != "query"
 }
 
-// callInPath returns the call a path is about, if it is about one (/v1/agents/calls/{id}...).
+// callInPath returns the call a path is about, if it is about one (/v1/agents/calls/{id}...),
+// and not for the collection under /v1/agents/calls/reviews.
 func callInPath(path string) (string, bool) {
 	rest, ok := strings.CutPrefix(path, "/v1/agents/calls/")
 	if !ok {
@@ -244,7 +244,7 @@ func callInPath(path string) (string, bool) {
 	}
 	id, _, _ := strings.Cut(rest, "/")
 
-	return id, id != ""
+	return id, id != "" && id != "reviews"
 }
 
 // approvalInPath returns the conversation an answer to a held call is about, if the path is

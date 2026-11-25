@@ -449,6 +449,21 @@ func (s *StoreSuite) TestAReleasedNumbersCallIsNotAttributedToItsFormerHolder() 
 	s.ErrorContains(err, "no number reaches call")
 }
 
+// shipStats ships this shard's stats as of now when its stats pages read what every shard ships,
+// as a sharded store's do, so a test reads one answer whichever suite runs it.
+func (s *StoreSuite) shipStats(now time.Time) {
+	if s.store.StatsShipped() {
+		s.Require().NoError(s.store.ShipStats(s.ctx, now))
+	}
+}
+
+// shipIndex is shipStats for the session and call lists.
+func (s *StoreSuite) shipIndex() {
+	if s.store.Indexed() {
+		s.Require().NoError(s.store.ShipIndex(s.ctx, time.Now()))
+	}
+}
+
 // onShard runs a statement on this shard's database, failing the test if it fails.
 func (s *StoreSuite) onShard(query string, args ...any) {
 	_, err := s.store.ShardDB().ExecContext(s.ctx, query, args...)
@@ -815,6 +830,7 @@ func (s *StoreSuite) TestDaysAreCutInUTCWhateverTheDatabaseSays() {
 	// the evening before in UTC.
 	morning := time.Date(2026, 3, 1, 1, 0, 0, 0, time.UTC)
 	s.opened("one", "acme", morning, nil)
+	s.shipStats(morning.Add(48 * time.Hour))
 
 	buckets, err := fresh.CustomerActivity(s.ctx, "acme", ActivityDaily, morning.Add(-48*time.Hour), morning.Add(48*time.Hour))
 

@@ -50,6 +50,7 @@ func (s *StoreSuite) TestModelRequestsCountEveryCustomerSinceTheWindowOpened() {
 	s.Require().NoError(insertRequest(s.ctx, s.store, &Request{
 		Modality: "llm", CustomerID: "acme", Provider: "openai", Model: "gpt-5.6-sol", StartedAt: s.base, Success: true,
 	}))
+	s.shipStats(s.base.Add(time.Hour))
 
 	counts, err := s.store.Requests.CountByModel(s.ctx, "stt", s.base)
 	s.Require().NoError(err)
@@ -480,6 +481,7 @@ func (s *StoreSuite) TestSpendCoversEveryModalityAtOnce() {
 	s.spent("acme", "llm", s.base.Add(time.Minute), 1200, nil)
 	s.spent("acme", "tts", s.base.Add(2*time.Minute), 800, nil)
 	s.spent("acme", "llm", s.base.Add(26*time.Hour), 400, nil)
+	s.shipStats(s.base.Add(48 * time.Hour))
 
 	buckets, err := s.store.Requests.Spend(
 		s.ctx, "acme", "modality", Daily, s.base, s.base.Add(48*time.Hour), 6, nil, UsageFilter{})
@@ -505,6 +507,7 @@ func (s *StoreSuite) TestSpendKeepsTheBiggestGroupsAndSumsTheRestIntoOther() {
 			map[string]string{"customer_id": fmt.Sprintf("c-%d", i)})
 	}
 	s.spent("acme", "llm", s.base.Add(10*time.Minute), 900, nil)
+	s.shipStats(s.base.Add(24 * time.Hour))
 
 	buckets, err := s.store.Requests.Spend(
 		s.ctx, "acme", "customer_id", Daily, s.base, s.base.Add(24*time.Hour), 2, nil, UsageFilter{})
@@ -523,6 +526,7 @@ func (s *StoreSuite) TestRuntimeIsSpendAndNotRequests() {
 	s.spent("acme", "llm", s.base.Add(time.Minute), 1000, support)
 	s.spent("acme", RuntimeModality, s.base.Add(2*time.Minute), 600, support)
 	s.spent("acme", RuntimeModality, s.base.Add(3*time.Minute), 600, nil)
+	s.shipStats(s.base.Add(24 * time.Hour))
 
 	buckets, err := s.store.Requests.Spend(
 		s.ctx, "acme", "modality", Daily, s.base, s.base.Add(24*time.Hour), 6, nil, UsageFilter{})
@@ -545,6 +549,7 @@ func (s *StoreSuite) TestRuntimeIsSpendAndNotRequests() {
 
 func (s *StoreSuite) TestTagKeysOfRuntimeAloneAreSpendWithNoRequests() {
 	s.spent("acme", RuntimeModality, s.base.Add(time.Minute), 600, map[string]string{"product": "support"})
+	s.shipStats(s.base.Add(24 * time.Hour))
 
 	keys, err := s.store.Requests.TagKeys(s.ctx, "acme", s.base, s.base.Add(24*time.Hour), nil)
 	s.Require().NoError(err)
@@ -561,6 +566,7 @@ func (s *StoreSuite) TestSpendCanBeNarrowedToOneLabel() {
 		map[string]string{"product": "support", "environment": "production"})
 	s.spent("acme", "llm", s.base.Add(2*time.Minute), 9000,
 		map[string]string{"product": "support", "environment": "staging"})
+	s.shipStats(s.base.Add(24 * time.Hour))
 
 	buckets, err := s.store.Requests.Spend(s.ctx, "acme", "product", Daily,
 		s.base, s.base.Add(24*time.Hour), 6, map[string]string{"environment": "production"}, UsageFilter{})
@@ -574,6 +580,7 @@ func (s *StoreSuite) TestSpendCanBeNarrowedToOneLabel() {
 func (s *StoreSuite) TestSpendIsOnlyTheCallingCustomers() {
 	s.spent("acme", "llm", s.base.Add(time.Minute), 1000, nil)
 	s.spent("globex", "llm", s.base.Add(time.Minute), 9000, nil)
+	s.shipStats(s.base.Add(24 * time.Hour))
 
 	buckets, err := s.store.Requests.Spend(
 		s.ctx, "acme", "modality", Daily, s.base, s.base.Add(24*time.Hour), 6, nil, UsageFilter{})
@@ -590,6 +597,7 @@ func (s *StoreSuite) TestTagKeysTellABreakdownFromAPieceOfContext() {
 	s.spent("acme", "llm", s.base.Add(2*time.Minute), 2000,
 		map[string]string{"product": "sales", "environment": "production"})
 	s.spent("acme", "llm", s.base.Add(3*time.Minute), 1000, nil)
+	s.shipStats(s.base.Add(24 * time.Hour))
 
 	keys, err := s.store.Requests.TagKeys(s.ctx, "acme", s.base, s.base.Add(24*time.Hour), nil)
 	s.Require().NoError(err)
@@ -617,6 +625,7 @@ func (s *StoreSuite) TestTagKeysReportOnlyTheLargestValues() {
 		s.spent("acme", "llm", s.base.Add(time.Duration(i)*time.Minute), int64(100*(i+1)),
 			map[string]string{"customer_id": fmt.Sprintf("c-%02d", i)})
 	}
+	s.shipStats(s.base.Add(24 * time.Hour))
 
 	keys, err := s.store.Requests.TagKeys(s.ctx, "acme", s.base, s.base.Add(24*time.Hour), nil)
 	s.Require().NoError(err)
@@ -686,22 +695,23 @@ func (s *StoreSuite) TestRequestQueryBudgets() {
 		s.Require().NoError(err)
 		s.Equal(int64(1), renamed)
 	}), "RenameUser")
-	s.Equal(shards, s.countQueries(func() {
+	s.shipStats(s.base.Add(time.Hour))
+	s.Equal(1, s.countQueries(func() {
 		_, err := s.store.Requests.Spend(s.ctx, "acme", "modality", Daily, s.base, s.base.Add(time.Hour), 6, nil, UsageFilter{})
 		s.Require().NoError(err)
 	}), "Spend")
-	// The labels' values are read only from a shard holding requests of the customer's.
-	s.Equal(1+shards, s.countQueries(func() {
+	// The labels' values are read only when the customer has requests.
+	s.Equal(2, s.countQueries(func() {
 		_, err := s.store.Requests.TagKeys(s.ctx, "acme", s.base, s.base.Add(time.Hour), nil)
 		s.Require().NoError(err)
 	}), "TagKeys")
-	s.Equal(shards, s.countQueries(func() {
+	s.Equal(1, s.countQueries(func() {
 		counts, err := s.store.Requests.CountByModel(s.ctx, "llm", s.base.Add(-time.Hour))
 		s.Require().NoError(err)
 		s.Equal(int64(4), counts["openai/gpt"])
 	}), "CountByModel")
-	// A read-only transaction with its own statement timeout on every shard.
-	s.Equal(4*shards, s.countQueries(func() {
+	// A read-only transaction with its own statement timeout, on this shard alone.
+	s.Equal(4, s.countQueries(func() {
 		_, err := s.store.Requests.VendorCostGaps(s.ctx, s.base.Add(-time.Hour), 3, time.Minute)
 		s.Require().NoError(err)
 	}), "VendorCostGaps")

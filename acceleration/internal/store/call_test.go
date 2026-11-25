@@ -223,17 +223,17 @@ func (s *StoreSuite) TestCallQueryBudgets() {
 			s.Len(listed, defaultCallLimit)
 			return err
 		}},
-		{"ModelCalls", 0, 1, func() error {
+		{"ModelCalls", 1, 0, func() error {
 			_, err := s.store.Calls.ModelCalls(s.ctx, "app", "agent", "stream-01", at, &end)
 			return err
 		}},
-		{"UsedModels", 0, 1, func() error { _, err := s.store.Calls.UsedModels(s.ctx, "app", "agent", at, &end); return err }},
-		{"Usage", 0, 1, func() error {
+		{"UsedModels", 1, 0, func() error { _, err := s.store.Calls.UsedModels(s.ctx, "app", "agent", at, &end); return err }},
+		{"Usage", 1, 0, func() error {
 			used, err := s.store.Calls.Usage(s.ctx, "app", "agent", "called", at, &end)
 			s.EqualValues(1, used.Requests)
 			return err
 		}},
-		{"Tokens", 0, 1, func() error {
+		{"Tokens", 1, 0, func() error {
 			_, err := s.store.Calls.Tokens(s.ctx, "app", "agent", "called", at, &end)
 			return err
 		}},

@@ -411,6 +411,7 @@ func (s *ShardedStoreSuite) TestEveryOrderPagesAcrossShards() {
 		s.Require().NoError(err)
 		s.Require().NotNil(pinnedAt)
 	}
+	s.Require().NoError(s.other.ShipIndex(s.ctx, s.base))
 
 	orders := []struct {
 		order SessionOrder

@@ -1232,6 +1232,7 @@ func (s *StoreSuite) TestARedactedToolCallStillCountsInToolUsage() {
 	s.toolItems("one", "app", "first", &due)
 	_, err := s.store.ResponseItems.Redact(s.ctx, due, 100)
 	s.Require().NoError(err)
+	s.shipStats(s.base.Add(24 * time.Hour))
 
 	overall, tools, err := s.store.CustomerToolUsage(s.ctx, "app", "", s.base, s.base.Add(24*time.Hour))
 	s.Require().NoError(err)
@@ -1331,6 +1332,7 @@ func (s *StoreSuite) TestSessionQueryBudgets() {
 		s.Len(listed, 11, "a page and the row that says there is another")
 		return err
 	}
+	s.shipIndex()
 	s.withinQueryBudgets([]queryBudget{
 		{"Upsert", 1 + s.homeWrites(), 0, func() error { return s.store.Sessions.Upsert(s.ctx, row) }},
 		// The insert finds the row, which the update writes.
@@ -1353,8 +1355,8 @@ func (s *StoreSuite) TestSessionQueryBudgets() {
 		{"Select", 0, 1, func() error { return pages(s.store.Sessions.Select(s.ctx, "app", SessionFilter{Limit: 10})) }},
 		{"Search", 0, 1, func() error { return pages(s.store.Sessions.Search(s.ctx, "app", "docs", SessionFilter{Limit: 10})) }},
 		{"Pin", 1, 0, func() error { _, err := s.store.Sessions.Pin(s.ctx, "app", row.ID, true, at); return err }},
-		{"Endings", 0, 1, func() error { _, err := s.store.Sessions.Endings(s.ctx, []string{"app"}, at); return err }},
-		{"Latest", 0, 1, func() error {
+		{"Endings", 1, 0, func() error { _, err := s.store.Sessions.Endings(s.ctx, []string{"app"}, at); return err }},
+		{"Latest", 1, 0, func() error {
 			latest, err := s.store.Sessions.Latest(s.ctx, []string{"app"}, at, 10)
 			s.Len(latest, 10)
 			return err
@@ -1368,7 +1370,8 @@ func (s *StoreSuite) TestSessionQueryBudgets() {
 		}},
 		{"SessionTools.Upsert", 1, 0, func() error { return s.store.SessionTools.Upsert(s.ctx, row.CustomerID, row.ID, tools) }},
 		{"SessionTools.Get", 1, 0, func() error { _, err := s.store.SessionTools.Get(s.ctx, row.CustomerID, row.ID); return err }},
-		{"Delete", 2 + s.homeWrites(), 0, func() error { return s.store.Sessions.Delete(s.ctx, "app", row.ID) }},
+		// The session and its tools, and with shards its home and its row in the shared list.
+		{"Delete", 2 + 2*s.homeWrites(), 0, func() error { return s.store.Sessions.Delete(s.ctx, "app", row.ID) }},
 	})
 
 	// Run twice: only a read by the id alone would tell another customer's row from the

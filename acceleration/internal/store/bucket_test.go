@@ -242,6 +242,7 @@ func (s *StoreSuite) TestADayIsAUTCDayWhateverTheDatabasesTimeZone() {
 	denver := s.inTimeZone("America/Denver")
 	day := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
 	from, to := day.Add(-24*time.Hour), day.Add(48*time.Hour)
+	s.shipStats(to)
 
 	requests, err := denver.Buckets.Select(s.ctx, "acme", BucketFilter{Modality: "stt", Granularity: Daily, From: from, To: to})
 	s.Require().NoError(err)

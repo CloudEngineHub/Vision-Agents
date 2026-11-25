@@ -8,9 +8,11 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -50,6 +52,8 @@ type ForgetUserSuite struct {
 	// app and organization are this test's own, so their keys are too.
 	app, organization string
 	keys              []string
+	// stopThere stops the worker of the shard there, which runs its part of each job.
+	stopThere func()
 }
 
 func TestForgetUserSuite(t *testing.T) {
@@ -82,6 +86,7 @@ func (s *ForgetUserSuite) SetupTest() {
 		s.T().Cleanup(func() { router.Close() })
 		s.shards = append(s.shards, router)
 	}
+	s.stopThere = s.working()
 	s.service = usagetest.Start(s.T(), usagetest.Options{
 		DSN: s.usageDSN, RedisURL: usagetest.RedisURL(s.T()), ManageKey: "manage-" + uuid.NewString(),
 	})
@@ -117,6 +122,13 @@ func (s *ForgetUserSuite) TearDownTest() {
 			s.Require().NoError(client.Do(s.ctx, client.B().Del().Key(key).Build()).Error())
 		}
 	}
+}
+
+// working runs the worker of the shard there, as its routers do, until the test ends or stop.
+func (s *ForgetUserSuite) working() (stop func()) {
+	stop = sync.OnceFunc(startShardJobs(s.ctx, s.shards[1].ShardJobWorker(slog.Default(), 20*time.Millisecond)))
+	s.T().Cleanup(stop)
+	return stop
 }
 
 // emptyDatabase is a database of this suite's own with an empty schema.
@@ -165,8 +177,10 @@ func (s *ForgetUserSuite) shipped(id uuid.UUID, app, user string, cost int64) {
 // stopped is what a run that stopped after its first call to the usage service left: every
 // shard and the service rewritten to replacement, and nothing after.
 func (s *ForgetUserSuite) stopped(replacement string) {
-	_, err := s.shards[0].Requests.RenameUser(s.ctx, s.app, person, replacement)
-	s.Require().NoError(err)
+	for _, shard := range s.shards {
+		_, err := shard.Requests.RenameUser(s.ctx, s.app, person, replacement)
+		s.Require().NoError(err)
+	}
 	manage, err := usageservice.NewClient(usageservice.ClientOptions{URL: s.service.URL, ManageKey: s.service.ManageKey})
 	s.Require().NoError(err)
 	_, err = manage.ForgetUser(s.ctx, "staff@example.com", usageservice.ForgetUser{AppID: s.app, UserID: person, Replacement: replacement})
@@ -391,6 +405,41 @@ func (s *ForgetUserSuite) TestForgettingAUserRewritesEveryShardAndTheUsageServic
 	s.Equal(len(usageservice.Intervals), s.windows(s.app, replacement))
 	s.Equal(before, s.spendOf(s.app), "count and cost per app are unchanged")
 	s.Equal([4]int64{4, 1070, 4, 1070}, before)
+}
+
+func (s *ForgetUserSuite) TestForgettingAUserWaitsForEveryShardToRunItsPart() {
+	s.stopThere()
+	here, there := s.recorded(0, s.app, person, 300), s.recorded(1, s.app, person, 500)
+	var out bytes.Buffer
+	finished := make(chan error, 1)
+	go func() {
+		finished <- s.runForget([]string{"forget-user", "--app", s.app, "--user", person, "--actor", "staff@example.com", "--settle", "0s"}, &out)
+	}()
+
+	s.Never(func() bool { return len(finished) > 0 }, time.Second, 20*time.Millisecond, "it finished before the shard there ran its part")
+	s.Equal(person, s.requests()[there].UserID)
+	s.working()
+	select {
+	case err := <-finished:
+		s.Require().NoError(err)
+	case <-time.After(time.Minute):
+		s.FailNow("it never finished once the shard there ran its part")
+	}
+
+	replacement := s.forgottenAs(out.String())
+	s.Contains(out.String(), "requests: 2 rows rewritten", "both shards' counts")
+	s.Equal(replacement, s.requests()[here].UserID)
+	s.Equal(replacement, s.requests()[there].UserID)
+}
+
+func (s *ForgetUserSuite) TestARunThatWaitedLongerThanItsWaitNamesTheShardBehind() {
+	s.stopThere()
+	s.recorded(1, s.app, person, 500)
+
+	err := s.runForget([]string{"forget-user", "--app", s.app, "--user", person, "--actor", "staff@example.com", "--dry-run", "--wait", "1s"}, &bytes.Buffer{})
+
+	s.Require().Error(err)
+	s.Contains(err.Error(), "waits on shards there")
 }
 
 func (s *ForgetUserSuite) TestForgettingAUserDeletesTheirBranchSnapshotsOnEveryShardAlone() {

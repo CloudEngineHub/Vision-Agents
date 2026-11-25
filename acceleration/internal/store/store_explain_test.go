@@ -335,8 +335,8 @@ func (s *StoreSuite) TestEveryHotTableIsReadByIndex() {
 			_, err := store.Requests.VendorCostGaps(ctx, s.base.Add(-7*24*time.Hour), 5, 10*time.Second)
 			return err
 		}},
-		{name: "Store.UserOrganizations", index: "requests_customer_started_idx", run: func(ctx context.Context, store *Store) error {
-			_, err := store.UserOrganizations(ctx, "customer-7", "user-7")
+		{name: "Store.forgetUserHere", index: "requests_customer_started_idx", run: func(ctx context.Context, store *Store) error {
+			_, err := store.forgetUserHere(ctx, "customer-7", forgetUserArgs{UserID: "user-7", Replacement: "user-7-forgotten", DryRun: true})
 			return err
 		}},
 

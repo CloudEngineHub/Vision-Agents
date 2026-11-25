@@ -726,7 +726,7 @@ func (s *StoreSuite) TestRenamingAUserWithMoreRequestsThanOneStatementTakesRenam
 
 	s.Require().NoError(err)
 	s.EqualValues(3, renamed)
-	s.Equal(4+len(s.store.shards())-1, updates, "a row per statement, then the one that finds none, and one on each shard holding none")
+	s.Equal(4, updates, "a row per statement, then the one that finds none")
 	theirs, err := s.store.Requests.CountByUser(s.ctx, "other-app", "jlahey")
 	s.Require().NoError(err)
 	s.EqualValues(1, theirs, "the same id under another app is another person")

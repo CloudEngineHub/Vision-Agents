@@ -1326,6 +1326,30 @@ TABLE shard_index_shipped
     shipped_through timestamp with time zone NOT NULL
     CONSTRAINT shard_index_shipped_pkey PRIMARY KEY (shard, kind)
 
+TABLE shard_job_runs
+    attempts integer NOT NULL DEFAULT 0
+    counts jsonb
+    finished_at timestamp with time zone
+    id bigint NOT NULL
+    job_id text NOT NULL
+    next_attempt_at timestamp with time zone NOT NULL DEFAULT now()
+    shard text NOT NULL
+    state text NOT NULL DEFAULT 'queued'::text
+    CONSTRAINT shard_job_runs_job_id_fkey FOREIGN KEY (job_id) REFERENCES shard_jobs(id) ON DELETE CASCADE
+    CONSTRAINT shard_job_runs_job_id_shard_key UNIQUE (job_id, shard)
+    CONSTRAINT shard_job_runs_pkey PRIMARY KEY (id)
+    CONSTRAINT shard_job_runs_state_check CHECK ((state = ANY (ARRAY['queued'::text, 'done'::text])))
+    CREATE INDEX shard_job_runs_due_idx ON public.shard_job_runs USING btree (shard, next_attempt_at) WHERE (state = 'queued'::text)
+
+TABLE shard_jobs
+    args jsonb NOT NULL DEFAULT '{}'::jsonb
+    created_at timestamp with time zone NOT NULL DEFAULT now()
+    customer_id text NOT NULL DEFAULT ''::text
+    id text NOT NULL
+    kind text NOT NULL
+    CONSTRAINT shard_jobs_pkey PRIMARY KEY (id)
+    CREATE INDEX shard_jobs_created_idx ON public.shard_jobs USING btree (created_at)
+
 TABLE shard_numbers
     name text NOT NULL
     number integer NOT NULL

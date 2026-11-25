@@ -85,6 +85,7 @@ type repos struct {
 	OpenLegs                       *OpenLegs
 	SessionTools                   *SessionTools
 	Sessions                       *Sessions
+	ShardJobs                      *ShardJobs
 	SimulationCases                *SimulationCases
 	SimulationRuns                 *SimulationRuns
 	Simulations                    *Simulations
@@ -192,6 +193,7 @@ func (s *Store) wire() {
 		OpenLegs:                       &OpenLegs{store: s},
 		SessionTools:                   &SessionTools{store: s},
 		Sessions:                       &Sessions{store: s},
+		ShardJobs:                      &ShardJobs{store: s},
 		SimulationCases:                &SimulationCases{store: s},
 		SimulationRuns:                 &SimulationRuns{store: s},
 		Simulations:                    &Simulations{store: s},

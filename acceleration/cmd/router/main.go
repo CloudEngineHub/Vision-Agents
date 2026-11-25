@@ -877,6 +877,13 @@ func run(settings config.Config, logger *slog.Logger) error {
 		defer stopIndex()
 	}
 
+	// Every router runs its shard's part of the jobs every shard runs on its own rows, such as
+	// forgetting a user.
+	if pgStore != nil {
+		stopJobs := startShardJobs(ctx, pgStore.ShardJobWorker(logger, 0))
+		defer stopJobs()
+	}
+
 	// One router of the deployment checks every organization's spend for a jump each hour, posts
 	// the day before's activity digest each day, and deletes the activity past its keep each day.
 	// It runs on every router with a database: without Slack settings it only deletes.

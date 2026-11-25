@@ -231,11 +231,15 @@ var shippedConcurrency = replacedTable{
 	at:      "minute",
 	columns: []string{"customer_id", "minute", "sessions"},
 	query: `
+WITH open AS (
+    SELECT customer_id, created_at, closed_at FROM agent_sessions WHERE closed_at > ?0 AND created_at < ?1
+    UNION ALL
+    SELECT customer_id, created_at, closed_at FROM agent_sessions WHERE closed_at IS NULL AND created_at < ?1
+)
 SELECT s.customer_id, m.minute, COUNT(*) AS sessions
-FROM agent_sessions AS s
+FROM open AS s
 JOIN generate_series(?0::timestamptz, ?1::timestamptz - interval '1 minute', interval '1 minute') AS m(minute)
     ON s.created_at < m.minute + interval '1 minute' AND (s.closed_at IS NULL OR s.closed_at > m.minute)
-WHERE s.created_at < ?1 AND (s.closed_at IS NULL OR s.closed_at > ?0)
 GROUP BY 1, 2`,
 }
 

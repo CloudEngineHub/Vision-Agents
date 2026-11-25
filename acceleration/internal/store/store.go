@@ -555,14 +555,14 @@ offered AS (
     ORDER BY tool, offered_at DESC
 ),
 calls AS (
-    SELECT COALESCE(tool, '') AS tool, GROUPING(tool) = 1 AS overall,
+    SELECT tool, tool = '' AS overall,
         SUM(calls) AS calls, SUM(failed) AS failed,
         COALESCE(SUM(tokens_total) / NULLIF(SUM(calls), 0), 0)::double precision AS avg_tokens,
         (SUM(ms_total) / NULLIF(SUM(ms_count), 0))::double precision AS avg_ms,
         (SUM(p99_ms * calls) FILTER (WHERE p99_ms IS NOT NULL)
             / NULLIF(SUM(calls) FILTER (WHERE p99_ms IS NOT NULL), 0))::double precision AS p99_ms
     FROM hours
-    GROUP BY GROUPING SETS ((tool), ())
+    GROUP BY tool
 )
 SELECT c.tool, c.overall, c.calls, c.failed, COALESCE(u.sessions, 0) AS sessions,
     CASE WHEN c.overall THEN NULL ELSE u.avg_turns_before_use END AS avg_turns_before_use,

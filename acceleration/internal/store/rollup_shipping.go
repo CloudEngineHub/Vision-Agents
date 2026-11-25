@@ -182,6 +182,8 @@ ran AS (
     WHERE a.created_at < ?1
 )`, ItemToolResult, ItemToolCall, charsPerToken)
 
+// shippedTools has a row with an empty tool for every tool of the hour, whose p99_ms the
+// tools' own percentiles cannot give.
 var shippedTools = replacedTable{
 	name: "shard_tool_hourly",
 	at:   "bucket",
@@ -194,7 +196,7 @@ offered AS (
     FROM ran WHERE definition_tokens IS NOT NULL
     ORDER BY customer_id, bucket, config_id, tool, at DESC
 )
-SELECT ran.customer_id, ran.bucket, ran.config_id, ran.tool,
+SELECT ran.customer_id, ran.bucket, ran.config_id, COALESCE(ran.tool, '') AS tool,
     COUNT(*) AS calls,
     COUNT(*) FILTER (WHERE failed) AS failed,
     COALESCE(SUM(tokens), 0)::double precision AS tokens_total,
@@ -207,7 +209,9 @@ SELECT ran.customer_id, ran.bucket, ran.config_id, ran.tool,
     o.summary_tokens
 FROM ran
 LEFT JOIN offered AS o USING (customer_id, bucket, config_id, tool)
-GROUP BY ran.customer_id, ran.bucket, ran.config_id, ran.tool, o.at, o.loading, o.definition_tokens, o.summary_tokens`,
+GROUP BY GROUPING SETS (
+    (ran.customer_id, ran.bucket, ran.config_id, ran.tool, o.at, o.loading, o.definition_tokens, o.summary_tokens),
+    (ran.customer_id, ran.bucket, ran.config_id))`,
 }
 
 var shippedToolSessions = replacedTable{

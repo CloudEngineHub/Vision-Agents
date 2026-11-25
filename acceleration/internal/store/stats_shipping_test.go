@@ -115,6 +115,23 @@ func (s *ShardedStoreSuite) TestTheFirstShipSendsEveryHourTheShardHas() {
 	s.Require().Len(turns, 1, "the turns before the first request are sent too")
 }
 
+// Defect: a first ship that starts at the first request or turn, which leaves out the sessions
+// and calls of a shard whose agents only chatted before.
+func (s *ShardedStoreSuite) TestTheFirstShipSendsTheSessionsBeforeAnyRequest() {
+	long := s.base.Add(-72 * time.Hour)
+	s.opened("chat", "app", long, nil)
+	s.Require().NoError(s.store.Calls.Start(s.ctx, &Call{ID: "called", CustomerID: "app", CallID: "c", StartedAt: long}))
+	s.Require().NoError(s.store.Calls.Finish(s.ctx, "app", "called", long.Add(time.Minute)))
+
+	s.Require().NoError(s.store.ShipStats(s.ctx, s.base))
+
+	activity, err := s.store.CustomerActivity(s.ctx, "app", ActivityDaily, long, s.base)
+	s.Require().NoError(err)
+	s.Require().Len(activity, 1)
+	s.EqualValues(1, activity[0].Sessions)
+	s.EqualValues(1, activity[0].Calls)
+}
+
 // Defect: a shard that stopped shipping for a while carries on from the hour before now, and
 // the hours it was away stay as they were when it stopped.
 func (s *ShardedStoreSuite) TestAShardThatStoppedShippingSendsTheHoursSince() {

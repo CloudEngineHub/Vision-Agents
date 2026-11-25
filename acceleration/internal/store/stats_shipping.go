@@ -140,14 +140,16 @@ func (s *Store) ShipStats(ctx context.Context, now time.Time) error {
 	return nil
 }
 
-// earliestStats is the start of the first request or turn this shard counted, not valid for a
-// shard that counted none.
+// earliestStats is the start of the first request, turn, session or call this shard counted,
+// not valid for a shard that counted none.
 func (s *Store) earliestStats(ctx context.Context) (sql.NullTime, error) {
 	var earliest sql.NullTime
 	err := s.shard.NewSelect().
-		ColumnExpr("LEAST((?), (?))",
+		ColumnExpr("LEAST((?), (?), (?), (?))",
 			s.shard.NewSelect().TableExpr("requests").ColumnExpr("min(started_at)"),
-			s.shard.NewSelect().TableExpr("turn_stats_hourly").ColumnExpr("min(bucket)")).
+			s.shard.NewSelect().TableExpr("turn_stats_hourly").ColumnExpr("min(bucket)"),
+			s.shard.NewSelect().TableExpr("agent_sessions").ColumnExpr("min(created_at)"),
+			s.shard.NewSelect().TableExpr("calls").ColumnExpr("min(started_at)")).
 		Scan(ctx, &earliest)
 	if err != nil {
 		return earliest, stack.Wrap(fmt.Errorf("store: ship stats: earliest: %w", err))

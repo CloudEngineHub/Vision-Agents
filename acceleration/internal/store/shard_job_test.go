@@ -158,9 +158,10 @@ func (s *ShardedStoreSuite) TestAForgottenUsersIDIsInNoShippedRollupAfterTheShar
 	indexed, err := s.store.global.NewSelect().TableExpr("session_index").Where("user_id = 'ada'").Count(s.ctx)
 	s.Require().NoError(err)
 	s.Zero(indexed)
-	spent, err := s.store.Spend.Since(s.ctx, "app", earlier)
+	meters, err := s.store.Spend.Meters(s.ctx, []string{"app"}, earlier)
 	s.Require().NoError(err)
-	s.EqualValues(1200, spent)
+	s.Require().Len(meters, 1)
+	s.EqualValues(1200, meters[0].CostMicros)
 
 	renamed := s.shippedSpendOf("here")
 	_, err = s.store.global.ExecContext(s.ctx, "DELETE FROM shard_stats_shipped WHERE shard = 'here'")

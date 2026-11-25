@@ -248,8 +248,6 @@ func (s *ShardedStoreSuite) workedIn(into *Store, id, user, tool string, failed 
 // statsOf is every stats and spend page of app's over the two hours from s.base, as read.
 func (s *ShardedStoreSuite) statsOf(read *Store) map[string]any {
 	from, to := s.base, s.base.Add(2*time.Hour)
-	spent, err := read.Spend.Since(s.ctx, "app", from)
-	s.Require().NoError(err)
 	meters, err := read.Spend.Meters(s.ctx, []string{"app"}, from)
 	s.Require().NoError(err)
 	activity, err := read.CustomerActivity(s.ctx, "app", ActivityDaily, from, to)
@@ -264,7 +262,7 @@ func (s *ShardedStoreSuite) statsOf(read *Store) map[string]any {
 	peak, err := read.CustomerConcurrencyPeak(s.ctx, "app", from, to)
 	s.Require().NoError(err)
 	s.Require().NotNil(peak.At)
-	return map[string]any{"spent": spent, "meters": meters, "activity": activity, "turns": turns,
+	return map[string]any{"meters": meters, "activity": activity, "turns": turns,
 		"overall tool use": overall, "tools": tools, "peak": peak.Sessions, "peak at": peak.At.UTC()}
 }
 
@@ -303,7 +301,9 @@ func (s *ShardedStoreSuite) TestTwoShardsRollupsAgreeWithOneDatabaseOfThemAll() 
 	s.Require().NoError(s.other.ShipStats(s.ctx, now))
 
 	want := s.statsOf(local)
-	s.Require().EqualValues(int64(1500), want["spent"], "the local answer is the whole workload's")
+	meters := want["meters"].([]MeterUse)
+	s.Require().Len(meters, 1)
+	s.Require().EqualValues(1500, meters[0].CostMicros, "the local answer is the whole workload's")
 	s.Require().EqualValues(int64(3), want["peak"])
 	s.Equal(want, s.statsOf(s.store))
 	s.Equal(want, s.statsOf(s.other), "every shard reads the same copy")

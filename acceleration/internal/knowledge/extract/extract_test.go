@@ -196,31 +196,37 @@ func (s *ExtractSuite) TestAPDFWithMorePagesThanAllowedIsRefused() {
 	s.requireReason(err, TooLarge)
 }
 
+// The deadline has passed before the read starts, so the answer cannot depend on how fast the
+// read is: it fails, and it does not even start the engine. A timeout of a nanosecond is not
+// that: its timer may not have fired by the time the read ends.
 func (s *ExtractSuite) TestReadingStopsAtTheDeadline() {
-	hurried := New(Options{Timeout: time.Nanosecond})
-	defer hurried.Close()
+	extractor := New(Options{})
+	defer extractor.Close()
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
 
-	_, err := hurried.Extract(context.Background(), "manual.pdf", s.fixture("manual.pdf"))
+	_, err := extractor.Extract(ctx, "manual.pdf", s.fixture("manual.pdf"))
 
 	s.Require().ErrorIs(err, context.DeadlineExceeded)
+	_, ok := ReasonOf(err)
+	s.False(ok, "a file stopped at the deadline is not called corrupt")
+	s.Nil(extractor.pdf, "a read past its deadline starts no engine")
 }
 
-// A context cancelled before the read starts kills the worker while the read opens the
-// document, and the open that fails then closes the worker. Run under -race, as CI does, a
-// close while the kill is still going on is a data race in PDFium's instance. The kill runs in
-// a goroutine of its own, so a read can also finish before it and return no error.
-func (s *ExtractSuite) TestAReadCancelledBeforeItStartsKillsItsWorkerBeforeClosingIt() {
-	data := s.fixture("manual.pdf")
-	for range 200 {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
+// Drawing a page is a read of its own: a deadline that has passed fails it before it takes a
+// worker. The extractor is closed, so a draw that did take the engine would fail with that
+// instead.
+func (s *ExtractSuite) TestDrawingAPageStopsAtTheDeadline() {
+	extractor := New(Options{})
+	document, err := extractor.Extract(context.Background(), "manual.pdf", s.fixture("manual.pdf"))
+	s.Require().NoError(err)
+	s.Require().NoError(extractor.Close())
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
 
-		_, err := s.extractor.Extract(ctx, "manual.pdf", data)
+	_, err = document.Render(ctx, 1)
 
-		if err != nil {
-			s.Require().ErrorIs(err, context.Canceled)
-		}
-	}
+	s.Require().ErrorIs(err, context.DeadlineExceeded)
 }
 
 // A deadline that passes after the document opened kills the worker while the read closes it.
@@ -280,11 +286,14 @@ func (s *ExtractSuite) TestAWorkerKilledWhileAPageIsWalkedFailsTheRead() {
 }
 
 func (s *ExtractSuite) TestReadingEveryFormatStopsAtTheDeadline() {
-	hurried := New(Options{Timeout: time.Nanosecond})
-	defer hurried.Close()
+	extractor := New(Options{})
+	defer extractor.Close()
+	// The deadline has passed already: a timeout of a nanosecond is done only once its timer runs.
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
 
 	for _, name := range []string{"handbook.docx", "handbook.odt", "handbook.rtf", "policies.doc", "menu.xlsx"} {
-		_, err := hurried.Extract(context.Background(), name, s.fixture(name))
+		_, err := extractor.Extract(ctx, name, s.fixture(name))
 
 		s.Require().ErrorIs(err, context.DeadlineExceeded, name)
 		_, ok := ReasonOf(err)

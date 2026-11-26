@@ -7,7 +7,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -180,6 +182,100 @@ func (s *CallShardSuite) TestAStatusForACallAnotherShardPlacedIsTakenThere() {
 	call, err := s.otherPhone.Outcomes().Read(ctx, s.customerID(), callID)
 	s.Require().NoError(err)
 	s.Equal(outcome.Busy, call.Outcome)
+}
+
+// What a vendor posts about a call another shard placed is held to the limit the node taking it
+// has for it, where it lands.
+func (s *CallShardSuite) TestAStatusForACallAnotherShardPlacedIsHeldToTheLimitOfOne() {
+	s.heldToAVendorsLimit("/v1/phone/status/", "a status is at most 64 KiB")
+}
+
+func (s *CallShardSuite) TestAMachineReportForACallAnotherShardPlacedIsHeldToTheLimitOfOne() {
+	s.heldToAVendorsLimit("/v1/phone/machine/", "a machine report is at most 64 KiB")
+}
+
+func (s *CallShardSuite) heldToAVendorsLimit(path, refusal string) {
+	token, carried := s.tokenOfAShardThatAnswers()
+
+	most, _ := s.posted(path+token, 64<<10)
+	over, answered := s.posted(path+token, 64<<10+1)
+
+	s.Equal(http.StatusTeapot, most)
+	s.Equal(arrived{declared: "65536", bytes: 64 << 10}, s.carried(carried))
+	s.Equal(http.StatusRequestEntityTooLarge, over)
+	s.Contains(answered, refusal)
+	s.Empty(carried)
+}
+
+func (s *CallShardSuite) TestAStatusCutShortIsNotCarried() {
+	token, carried := s.tokenOfAShardThatAnswers()
+	connection, err := net.Dial("tcp", s.server.Listener.Addr().String())
+	s.Require().NoError(err)
+	defer connection.Close()
+
+	_, err = fmt.Fprintf(connection, "POST /v1/phone/status/%s HTTP/1.1\r\nHost: router\r\nContent-Length: 100\r\n\r\nCallStatus=busy", token)
+	s.Require().NoError(err)
+	s.Require().NoError(connection.(*net.TCPConn).CloseWrite())
+	s.Require().NoError(connection.SetReadDeadline(time.Now().Add(settleFor)))
+	answered, err := io.ReadAll(connection)
+
+	s.Require().NoError(err)
+	s.Contains(string(answered), "400 Bad Request")
+	s.Empty(carried)
+}
+
+// The other node is given its time from when the post is read.
+func (s *CallShardSuite) TestAStatusSlowerThanTheOtherNodesTimeIsCarried() {
+	s.router.forwardTimeout = 2 * time.Second
+	s.T().Cleanup(func() { s.router.forwardTimeout = forwardTimeout })
+	token, _ := s.tokenOfAShardThatAnswers()
+	reader, writer := io.Pipe()
+	s.T().Cleanup(func() { _ = reader.Close() })
+	go func() {
+		for range 4 {
+			time.Sleep(time.Second)
+			if _, err := writer.Write([]byte("a")); err != nil {
+				return
+			}
+		}
+		_ = writer.Close()
+	}()
+
+	response, err := s.server.Client().Post(s.server.URL+"/v1/phone/status/"+token, "application/x-www-form-urlencoded", reader)
+
+	s.Require().NoError(err)
+	s.Require().NoError(response.Body.Close())
+	s.Equal(http.StatusTeapot, response.StatusCode)
+}
+
+// The node that answers a fetch of a plan reads no body, so none is carried.
+func (s *CallShardSuite) TestAPlanFetchForAnotherShardIsCarriedWithoutABody() {
+	token, carried := s.tokenOfAShardThatAnswers()
+
+	status, _ := s.posted("/v1/phone/answer/"+token, 1<<20)
+
+	s.Equal(http.StatusTeapot, status)
+	s.Equal(arrived{declared: "0"}, s.carried(carried))
+}
+
+// tokenOfAShardThatAnswers is a token minted in a shard of one node, which answers 418, and what
+// is carried there.
+func (s *CallShardSuite) tokenOfAShardThatAnswers() (string, <-chan arrived) {
+	owner, carried := s.nodeThatAnswers(0)
+	shard := "vendor" + strings.ReplaceAll(s.utils.uuid(), "-", "")
+	s.nodeDirectory(owner, shard, slog.New(slog.DiscardHandler))
+	return shard + "." + s.utils.uuid(), carried
+}
+
+// posted is the answer to a form of size bytes a vendor posts.
+func (s *CallShardSuite) posted(path string, size int) (int, string) {
+	response, err := s.server.Client().Post(s.server.URL+path, "application/x-www-form-urlencoded",
+		strings.NewReader(strings.Repeat("a", size)))
+	s.Require().NoError(err)
+	defer response.Body.Close()
+	answered, err := readAll(response)
+	s.Require().NoError(err)
+	return response.StatusCode, string(answered)
 }
 
 func (s *CallShardSuite) TestAPlanFetchForAShardNoNodeAnswersIsAnsweredForTheVendorToRetry() {

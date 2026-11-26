@@ -536,18 +536,12 @@ func (s *Server) receiveVendorPost(w http.ResponseWriter, r *http.Request, what 
 		writeError(w, errNoCallStatus)
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, callStatusLimit))
-	var tooLarge *http.MaxBytesError
-	if errors.As(err, &tooLarge) {
-		writeError(w, payloadTooLarge("a "+what+" is at most 64 KiB"))
-		return
-	}
-	if err != nil {
-		writeError(w, invalidRequest("could not read that "+what))
+	body, read := readVendorPost(w, r, what)
+	if !read {
 		return
 	}
 
-	err = take(r.Context(), r.PathValue("token"), r.Header.Get("Content-Type"), body)
+	err := take(r.Context(), r.PathValue("token"), r.Header.Get("Content-Type"), body)
 	switch {
 	case errors.Is(err, phone.ErrUnknownStatus):
 		writeError(w, errNoCallStatus)
@@ -558,6 +552,22 @@ func (s *Server) receiveVendorPost(w http.ResponseWriter, r *http.Request, what 
 	default:
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+// readVendorPost reads what a vendor posted to one of a placed call's URLs. It answers the request
+// itself when it cannot, and says whether there is a body to go on with.
+func readVendorPost(w http.ResponseWriter, r *http.Request, what string) ([]byte, bool) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, callStatusLimit))
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		writeError(w, payloadTooLarge("a "+what+" is at most 64 KiB"))
+		return nil, false
+	}
+	if err != nil {
+		writeError(w, invalidRequest("could not read that "+what))
+		return nil, false
+	}
+	return body, true
 }
 
 // transferPhoneCall brings a human onto a call that is already happening.

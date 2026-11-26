@@ -413,6 +413,17 @@ backfill-owner-kinds --write` records the one verified kind its owner's sessions
 when it is the kind that owner's next token says (left alone otherwise). `internal/conversation`
 enforces this.
 
+The command prints one line per channel, a dry run too: customer, conversation, the kind and what
+was done (`would stamp`, `stamped`, `skipped:<why>` or `failed:<reason>`, where the reason is `rate_limited`, `stream_error`,
+`store_error` or `error`; the error's own text is only in the log), then the counts. It waits
+out Stream's rate limit, and when it stops early (a limit that does not lift, Ctrl-C) it prints the
+`--after-customer` and `--after-conversation` to rerun from. A channel that failed for another reason counts as done, so a resume skips it; rerun without the
+`--after-*` flags to retry the `failed:` lines. A customer moved from a proxy
+deployment is left out: behind a proxy every end user was recorded `authenticated`, so a guest
+whose app signs the role would be stamped `authenticated` and refused its conversation. The command
+does not detect such a customer. Run it with `--customer`, once for each customer that was not
+moved. `--write` refuses to run without `--customer`; a dry run without it walks every customer.
+
 `internal/session` enforces whose a session is rather than the handlers, so `getSession`,
 `stopSession`, `deleteSession`, the events socket, the call token and the session actions cannot each be
 wrong in their own way.

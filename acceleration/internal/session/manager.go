@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,6 +24,7 @@ import (
 	"github.com/GetStream/Vision-Agents/acceleration/internal/auth"
 	persistent "github.com/GetStream/Vision-Agents/acceleration/internal/conversation"
 	"github.com/GetStream/Vision-Agents/acceleration/internal/decisionrouter"
+	"github.com/GetStream/Vision-Agents/acceleration/internal/goroutine"
 	"github.com/GetStream/Vision-Agents/acceleration/internal/guardrail"
 	"github.com/GetStream/Vision-Agents/acceleration/internal/harness"
 	"github.com/GetStream/Vision-Agents/acceleration/internal/imagejobs"
@@ -233,6 +235,8 @@ type Manager struct {
 	// makes or changes a task (SetSchedulerKick); nil where no worker runs.
 	kickScheduler func()
 	closed        bool
+	// stopping is set as Shutdown starts.
+	stopping atomic.Bool
 	// closing counts the sessions taken off the map whose Close has not returned. They are
 	// still writing how they ended, so a draining router waits on them and Shutdown keeps
 	// the recorders open for them (ended).
@@ -543,6 +547,17 @@ func (m *Manager) Create(ctx context.Context, spec Spec) (_ *Session, failure er
 	}
 
 	opened := false
+	// The agent joins agent:<id>, and calls are placed and people brought into it.
+	named := spec.Reopened.IsZero() && !generated && !spec.MintedID
+	releaseCall, err := m.claimCall(ctx, spec, named)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if !opened {
+			releaseCall()
+		}
+	}()
 	if cid, by, handed := m.handedOut(ctx, spec, stream); handed {
 		spec.ConversationID, spec.Dispatched, spec.HandedOutBy = cid, true, by
 		ctx = persistent.RouterOpensDispatched(ctx, cid)
@@ -598,6 +613,11 @@ func (m *Manager) Create(ctx context.Context, spec Spec) (_ *Session, failure er
 				return nil, fmt.Errorf("session: the app conversation %s is kept in: %w", conv.CID(), err)
 			}
 			spec.StreamApp = kept
+			releaseCall()
+			if releaseCall, err = m.claimCall(ctx, spec, named); err != nil {
+				conv.Release()
+				return nil, err
+			}
 		}
 		spec.ConversationID = conv.CID()
 		conv.ShowTools(spec.VisibleTools)
@@ -697,6 +717,15 @@ func (m *Manager) Create(ctx context.Context, spec Spec) (_ *Session, failure er
 	}()
 	created := m.newSession(ctx, spec, conv, skills, opening, runtime)
 	created.loading = loading
+	created.closers = append(created.closers, func() {
+		// Sessions are closed one after another as the router stops, and a Redis that does not
+		// answer would have each wait. A hold not taken back lapses.
+		if m.stopping.Load() {
+			goroutine.Go(context.WithoutCancel(ctx), releaseCall)
+			return
+		}
+		releaseCall()
+	})
 	// A session held ends where it closes (Session.counted); one never held ends here,
 	// unless it was turned away for a router shutting down or for a session already held
 	// under its id (a redelivered hook): neither is a session that failed.
@@ -2097,6 +2126,7 @@ func forgetting(ctx context.Context, customerID string) routing.Owner {
 // Shutdown ends every session, which is what a router does on its way down rather than
 // dropping calls by exiting.
 func (m *Manager) Shutdown() error {
+	m.stopping.Store(true)
 	m.mu.Lock()
 	m.closed = true
 	running := make([]*Session, 0, len(m.sessions))
@@ -2279,6 +2309,55 @@ func (m *Manager) stream(ctx context.Context, spec Spec, newCall bool) (streamap
 		return streamapp.Bound{}, fmt.Errorf("session: which Stream app to act in: %w", err)
 	}
 	return bound, nil
+}
+
+// claimCall says the session's customer is on the call it is named after, agent:<id> in the
+// Stream app it acts in, until the func it returns is called. Of a named session it is refused
+// with ErrSessionExists when the call is another customer's, by its legs or by a session some node
+// runs, and with store.ErrCallUnchecked when that cannot be told. An id the router made names
+// nobody else's call, and a reopened session's is its own, so theirs is only said. A session of no
+// Stream app has no call.
+func (m *Manager) claimCall(ctx context.Context, spec Spec, named bool) (func(), error) {
+	if spec.StreamApp == store.ForeignStreamApp {
+		return func() {}, nil
+	}
+	var deployment int64
+	if m.options.Stream != nil {
+		deployment = m.options.Stream.DeploymentApp()
+	}
+	app, directory := spec.StreamApp, m.options.Directory
+	if app == deployment {
+		app = 0
+	}
+	on := store.NamedCall{Scope: store.AppOf(app, deployment)}
+	hold := func(context.Context) error { return nil }
+	release := func() {}
+	if directory != nil {
+		on.Holder = func(ctx context.Context) (string, error) { return directory.CallHolder(ctx, app, spec.ID) }
+		hold = func(ctx context.Context) error {
+			said, err := directory.HoldCall(ctx, spec.CustomerID, app, spec.ID)
+			release = sync.OnceFunc(func() { said(context.WithoutCancel(ctx)) })
+			return err
+		}
+	}
+	if !named || m.options.Store == nil {
+		if err := hold(ctx); err != nil {
+			m.logger.Warn("could not say whose call a session is on", "session", spec.ID, "app_id", spec.CustomerID, "error", err)
+		}
+		return release, nil
+	}
+	err := m.options.Store.CallLegs.Claim(ctx, spec.CustomerID, streamapp.AgentCallType, spec.ID, on, hold)
+	if err == nil {
+		return release, nil
+	}
+	release()
+	if errors.Is(err, store.ErrCallUnchecked) {
+		m.logger.Warn("refused a session: could not tell whose its call is", "session", spec.ID, "app_id", spec.CustomerID, "error", err)
+	}
+	if errors.Is(err, store.ErrCallTaken) {
+		err = stack.Wrap(ErrSessionExists)
+	}
+	return func() {}, err
 }
 
 // hookPinFor is how long a hook's app is remembered for the session it starts.

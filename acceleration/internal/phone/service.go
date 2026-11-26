@@ -176,6 +176,8 @@ type Apps interface {
 	// wherever reading that app does: a line in the deployment's app that the customer may
 	// no longer add to is still the router's own to take down, and one left there is billed.
 	ForAppRemoving(ctx context.Context, customer string, app int64) (*Stream, error)
+	// DeploymentApp is the deployment's own app's id, zero while it is not known.
+	DeploymentApp() int64
 	// Placed is the pin of the app For makes new lines for a customer in, read without acting
 	// for the customer, so one customer's request can ask where another's lines go.
 	Placed(ctx context.Context, customer string) (int64, error)
@@ -1227,6 +1229,11 @@ type CallRequest struct {
 	// call, agent:<session id>. Empty chooses one, because two calls from the same number
 	// are two conversations and must not land in the same place.
 	SessionID string
+	// MintedID is a SessionID the router made, which names no other customer's call.
+	MintedID bool
+	// Holder, when set, is the customer whose running session is on the call agent:<id> in a
+	// Stream app, 0 for the deployment's own, or empty. A SessionID not minted is checked with it.
+	Holder func(ctx context.Context, app int64, id string) (string, error)
 	// RingTimeout is how long to ring before giving up. Zero leaves the vendor's default.
 	RingTimeout time.Duration
 	// InitialDigits are pressed once the person answers, for reaching an extension behind
@@ -1296,7 +1303,7 @@ func lasting(err error) bool {
 		errors.Is(err, store.ErrNumberHeldElsewhere) ||
 		errors.Is(err, ErrNoStream) || errors.Is(err, ErrNoSealerToCall) ||
 		errors.Is(err, ErrNotConfigured) || errors.Is(err, ErrSIPTrunksDisabled) ||
-		errors.Is(err, errLasting) || (err != nil && streamapp.Settled(err))
+		errors.Is(err, errLasting) || errors.Is(err, store.ErrCallTaken) || (err != nil && streamapp.Settled(err))
 }
 
 // errLasting marks a failure that has no kind of its own and that a second try meets again: a
@@ -1392,6 +1399,23 @@ func (s *Service) call(ctx context.Context, request CallRequest, sent *bool) (Pl
 	// a customer's own trunk is told by the router's own bridge.
 	_, reader := provider.(StatusReader)
 	reports := reader && s.publicURL != ""
+	// The answered leg is routed into the call, so a session id somebody chose has to be a call of
+	// the customer's.
+	var on *store.NamedCall
+	if request.SessionID != "" && !request.MintedID {
+		var deployment int64
+		if s.apps != nil {
+			deployment = s.apps.DeploymentApp()
+		}
+		on = &store.NamedCall{Scope: store.AppOf(pin, deployment)}
+		if request.Holder != nil {
+			app := pin
+			if on.Scope.Unpinned {
+				app = 0
+			}
+			on.Holder = func(ctx context.Context) (string, error) { return request.Holder(ctx, app, callID) }
+		}
+	}
 	token, err := s.outcomes.PlacedWithin(ctx, outcome.Call{
 		Key: outcome.Key{
 			CustomerID: request.Owner.CustomerID, StreamAppPK: pin, CallType: callType, CallID: callID,
@@ -1399,9 +1423,15 @@ func (s *Service) call(ctx context.Context, request CallRequest, sent *bool) (Pl
 		},
 		Vendor:  held.Vendor,
 		Reports: reports || trunk != nil,
-	}, room.OrganizationID, room.AtOnce)
+	}, room.OrganizationID, room.AtOnce, on)
 	if errors.Is(err, store.ErrCallsAtOnce) {
 		return Placed{}, room.Refusal(err)
+	}
+	if errors.Is(err, store.ErrCallUnchecked) {
+		s.logger.Warn("refused a phone call: could not tell whose its call is", "session", sessionID, "app_id", request.Owner.CustomerID, "error", err)
+	}
+	if errors.Is(err, store.ErrCallTaken) || errors.Is(err, store.ErrCallUnchecked) {
+		return Placed{}, err
 	}
 	if err != nil {
 		return Placed{}, notPlaced(ctx, err)

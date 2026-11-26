@@ -407,9 +407,12 @@ func (s *Server) placePhoneCall(ctx context.Context, request *placePhoneCallRequ
 			return nil, err
 		}
 		if theirs {
-			return nil, conflict("session_id is taken")
+			return nil, errSessionTaken
 		}
 		call.SessionID = held
+		if s.directory != nil {
+			call.Holder = s.directory.CallHolder
+		}
 	}
 	if request.Body.RingTimeoutSeconds != nil {
 		if *request.Body.RingTimeoutSeconds < 0 {
@@ -434,6 +437,12 @@ func (s *Server) placePhoneCall(ctx context.Context, request *placePhoneCallRequ
 	placed, err := s.phone.Call(ctx, call)
 	if failure, over := tierLimitReached(err); over {
 		return nil, failure
+	}
+	if errors.Is(err, store.ErrCallTaken) {
+		return nil, errSessionTaken
+	}
+	if errors.Is(err, store.ErrCallUnchecked) {
+		return nil, errCallUnchecked
 	}
 	if errors.Is(err, dlc.ErrRefused) || errors.Is(err, phone.ErrDestinationRefused) {
 		return nil, forbidden(err.Error())
@@ -1006,6 +1015,11 @@ func phoneTags(tags *map[string]string) routing.Tags {
 	}
 	return routing.Tags(*tags)
 }
+
+var errSessionTaken = conflict("session_id is taken")
+
+// errCallUnchecked refuses a session id whose call the router could not tell the customer of.
+var errCallUnchecked = unavailable("could not tell whose call that session id is, try again")
 
 var errNoTelephony = notConfigured("phone numbers are not available: no telephony configured")
 

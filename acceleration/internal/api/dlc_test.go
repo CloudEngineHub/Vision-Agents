@@ -1220,10 +1220,23 @@ func (s *DLCSuite) TestThirtyMinutesOfCallsInADayRefuseTheNextDial() {
 	s.Equal(int64(30*60), sandbox.AudioSecondsToday)
 }
 
+// DLCBillingSuite runs the monthly campaign job in a database of its own: the job bills every
+// campaign in its database, and a poll settles every app's lost campaign, so another test's
+// campaign whose months are still on their way to Postgres would be counted as the test's.
+type DLCBillingSuite struct {
+	dlcRegistration
+}
+
+func TestDLCBillingSuite(t *testing.T) {
+	billing := new(DLCBillingSuite)
+	billing.database = "dlc_billing"
+	runSuite(t, billing)
+}
+
 // Registering costs a brand fee once, a review per campaign, and the campaign's first three
 // months at once; asking the vendor again, or the monthly job running in one of those months,
 // bills none of it again.
-func (s *DLCSuite) TestARegisteredBrandAndCampaignAreBilledOnce() {
+func (s *DLCBillingSuite) TestARegisteredBrandAndCampaignAreBilledOnce() {
 	sent := s.submitted()
 	status, reviewed := s.review(sent.Id, dlc.Approve, "")
 	s.Require().Equal(http.StatusOK, status)
@@ -1243,6 +1256,18 @@ func (s *DLCSuite) TestARegisteredBrandAndCampaignAreBilledOnce() {
 		read()
 		return len(fees[dlc.ModelCampaignMonth]) == dlc.UpfrontMonths
 	}, settleFor, 50*time.Millisecond, "the campaign's first months were not billed")
+	now := time.Now().UTC()
+	registeredMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	var upfront []uuid.UUID
+	for k := range dlc.UpfrontMonths {
+		month := registeredMonth.AddDate(0, k, 0)
+		upfront = append(upfront, routing.UsageID("dlc_campaign", "telnyx", *reviewed.VendorCampaignId, month.Format("2006-01")))
+	}
+	var billedUpfront []uuid.UUID
+	for _, month := range fees[dlc.ModelCampaignMonth] {
+		billedUpfront = append(billedUpfront, month.UsageID)
+	}
+	s.ElementsMatch(upfront, billedUpfront, "the registered month and the next two, each under its own usage id")
 
 	s.registrar10DLC.Poll(context.Background())
 	billed, err := s.registrar10DLC.BillCampaigns(context.Background(), time.Now().AddDate(0, -2, 0))

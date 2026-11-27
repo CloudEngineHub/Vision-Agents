@@ -65,6 +65,10 @@ type Spec struct {
 	// the Router sets once it found the channel's channel_threads row (api.threadSession,
 	// api.threadConversation). No request sets it.
 	Thread bool
+	// MembersShared holds ConversationID on a conversation that is open to every member of its
+	// channel (persistent.Shared). Manager.Create finds this out while it reads the
+	// conversation. No request sets it.
+	MembersShared bool
 	// Dispatched holds ConversationID on the channel a message the router handed to a worker
 	// was written in, which the worker's session answers (Manager.handedOut). The person writes
 	// there themselves, so the session writes only its replies. No request sets it.

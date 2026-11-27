@@ -72,7 +72,8 @@ jobs:
       - name: Check out the commit anonymously
         run: |
           git init -q .
-          git fetch -q --depth=1 --no-tags "https://github.com/$REPOSITORY" "$SHA"
+          git remote add origin "https://github.com/$REPOSITORY"
+          git fetch -q --depth=1 --no-tags origin "$SHA"
           git checkout -q FETCH_HEAD
         env:
           REPOSITORY: ${{ github.repository }}
